@@ -8,6 +8,7 @@ endif()
 # find dependencies
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 
@@ -22,5 +23,13 @@ if(BUILD_TESTING)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
+
+add_executable(road_input_node src/road_input_node.cpp)
+target_include_directories(road_input_node PRIVATE
+  include)
+ament_target_dependencies(road_input_node rclcpp rcl_interfaces std_msgs)
+
+install(TARGETS road_input_node
+  DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
