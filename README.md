@@ -32,13 +32,33 @@ source install/setup.bash
 
 ## 运行
 
-### 启动路面输入节点
+> 详细的编译运行步骤（含新手向说明）请见 [RUNNING.md](RUNNING.md)。
+
+### 观察话题通信（发布 + 订阅）
+
+需要 **两个终端**（都先 `source /opt/ros/jazzy/setup.bash` 和 `source ~/suspension_ws/install/setup.bash`）。
+
+**终端 A：启动发布节点**
 
 ```bash
 ros2 run suspension_sim road_input_node
 ```
 
 节点会以 **100 Hz** 频率在话题 `road_height`（类型 `std_msgs/msg/Float64`）上发布路面高度。
+
+**终端 B：启动订阅节点**
+
+```bash
+ros2 run suspension_sim road_display_node
+```
+
+订阅节点会持续打印收到的高度值：
+
+```
+[INFO] [road_display_node]: road_height = 0.0500 m
+[INFO] [road_display_node]: road_height = 0.0499 m
+...
+```
 
 ### 验证
 
@@ -83,12 +103,14 @@ suspension_sim/
 ├── CMakeLists.txt          # 构建配置
 ├── package.xml             # 包清单（ROS 2）
 ├── README.md               # 说明文档
+├── RUNNING.md              # 编译运行指南（新手向）
 ├── version.md              # 版本历史
 ├── include/
 │   └── suspension_sim/
 │       └── road_profile.hpp  # 路面模型抽象基类与多种实现（策略模式）
 ├── src/
-│   └── road_input_node.cpp   # 路面输入节点（100 Hz 发布 road_height）
+│   ├── road_input_node.cpp   # 路面输入节点（100 Hz 发布 road_height）
+│   └── road_display_node.cpp # 显示节点（订阅并打印 road_height）
 └── LICENSE                 # Apache-2.0 许可证
 ```
 
@@ -102,6 +124,13 @@ suspension_sim/
 | `SpeedBumpRoadProfile` | `speed_bump` | 减速带路面，单次三角凸起             |
 
 新增路面时，只需在 `road_profile.hpp` 中继承 `RoadProfile` 实现 `compute_height()`，并在 `road_input_node.cpp` 的 `rebuild_profile_impl()` 中注册即可。
+
+## 节点
+
+| 节点 | 文件 | 作用 |
+| ---- | ---- | ---- |
+| `road_input_node` | `src/road_input_node.cpp` | 发布者：100 Hz 发布路面高度到 `road_height` |
+| `road_display_node` | `src/road_display_node.cpp` | 订阅者：订阅 `road_height` 并打印高度值 |
 
 ## 版本
 

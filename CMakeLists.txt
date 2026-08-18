@@ -29,7 +29,12 @@ target_include_directories(road_input_node PRIVATE
   include)
 ament_target_dependencies(road_input_node rclcpp rcl_interfaces std_msgs)
 
-install(TARGETS road_input_node
+add_executable(road_display_node src/road_display_node.cpp)
+target_include_directories(road_display_node PRIVATE
+  include)
+ament_target_dependencies(road_display_node rclcpp std_msgs)
+
+install(TARGETS road_input_node road_display_node
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
