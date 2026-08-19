@@ -11,6 +11,13 @@ find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+# 自定义消息
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/SuspensionState.msg"
+  DEPENDENCIES std_msgs
+)
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
@@ -34,7 +41,18 @@ target_include_directories(road_display_node PRIVATE
   include)
 ament_target_dependencies(road_display_node rclcpp std_msgs)
 
-install(TARGETS road_input_node road_display_node
+add_executable(model_node src/model_node.cpp)
+target_include_directories(model_node PRIVATE
+  include)
+ament_target_dependencies(model_node rclcpp std_msgs)
+# Eigen3 为纯头文件库，使用 CMake 导入目标链接
+target_link_libraries(model_node Eigen3::Eigen)
+# 链接本包由 rosidl_generate_interfaces 生成的消息类型支持库目标
+rosidl_get_typesupport_target(cpp_typesupport_target
+  ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(model_node "${cpp_typesupport_target}")
+
+install(TARGETS road_input_node road_display_node model_node
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
