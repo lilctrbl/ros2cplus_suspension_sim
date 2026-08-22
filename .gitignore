@@ -57,3 +57,7 @@ core
 # ===== 编译缓存 / 系统 =====
 .vscode/**
 *.code-workspace
+
+# ===== 本地自定义配置（不入库，保留默认 config/model_params.yaml）=====
+config/*.local.yaml
+config/*.custom.yaml

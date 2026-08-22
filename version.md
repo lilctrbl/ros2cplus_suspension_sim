@@ -1,6 +1,46 @@
 # 版本历史
 
-## v1.2（当前版本）
+## v1.3（当前版本）
+
+发布日期：2026-08-21
+
+### 新增功能
+
+- **悬架模型抽象基类 `SuspensionModel`**
+  - 新增 `include/suspension_sim/suspension_model.hpp`，定义纯虚接口：`reset()` / `update()` / `getState()` / `getBodyAccel()` / `stateSize()` / `name()`
+  - `QuarterCarModel2DOF` 改为**公开继承**该基类，并补充 `stateSize()` / `name()` 实现
+- **YAML 参数加载**
+  - 新增 `include/suspension_sim/params_loader.hpp` + `src/params_loader.cpp`
+  - `loadParams(yaml_file)`：从 YAML 读取物理参数（`ms`/`mus`/`ks`/`cs`/`kt`/`rate`/`type`），文件不存在或解析失败时回退默认值
+  - `createModel(params)`：**工厂函数**，按 `type` 字段构造具体模型，未知类型回退到 `quarter_car_2dof`
+  - 新增默认配置 `config/model_params.yaml`
+- **`model_node` 使用基类指针**
+  - 节点改为持有 `std::unique_ptr<SuspensionModel>`，具体模型由 `loadParams` + `createModel` 构造
+  - 新增 `model_yaml` 参数与 `MODEL_YAML` 环境变量；YAML 作为默认值，ROS 参数仍可覆盖
+- **独立测试程序 `test_model`**
+  - 新增 `src/test_model.cpp`，不依赖 rclcpp：加载 YAML → 工厂构造模型 → 正弦路面仿真 5 秒 → 每 1 秒打印状态
+  - 已实测通过（加载 `config/model_params.yaml` 并输出合理瞬态响应）
+
+### 配置变更
+
+- `CMakeLists.txt`：新增 `find_package(yaml-cpp)`、`params_loader.cpp` 源文件、`test_model` 目标、`config/model_params.yaml` 安装、编译期注入默认 YAML 路径
+- `package.xml`：新增 `<depend>yaml-cpp-vendor</depend>`
+
+### 文档更新
+
+- `README.md`：补充抽象基类、YAML 参数加载、测试程序说明，更新依赖表与项目结构
+- `RUNNING.md`：新增 `test_model` 运行步骤，更新目录结构
+- `learning_notes.txt`：新增本次掌握的知识点（见下）
+
+### 本次新掌握知识点
+
+- 抽象基类 + 工厂模式：`std::unique_ptr<SuspensionModel>` 统一持有不同具体模型，扩展新模型只需新增派生类并注册工厂分支
+- `yaml-cpp` 基本用法：`YAML::Load`、`node["key"].as<double>()`、`node["key"]` 存在性判断；ROS 2 Jazzy 中通过 `yaml-cpp-vendor` 依赖引入
+- CMake 技巧：多个可执行目标共享同一源文件（`params_loader.cpp`）时需在 `add_executable` 中分别列出；通过 `target_compile_definitions` 注入编译期路径宏
+
+---
+
+## v1.2
 
 发布日期：2026-08-19
 

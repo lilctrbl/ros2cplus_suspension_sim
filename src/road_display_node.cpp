@@ -13,7 +13,8 @@ namespace suspension_sim
 class RoadDisplayNode : public rclcpp::Node
 {
 public:
-  RoadDisplayNode() : Node("road_display_node")
+  RoadDisplayNode()
+  : Node("road_display_node")
   {
     subscription_ = this->create_subscription<std_msgs::msg::Float64>(
       "road_height",

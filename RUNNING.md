@@ -6,15 +6,21 @@
 
 ```
 suspension_sim/
+├── config/
+│   └── model_params.yaml      # 悬架模型物理参数（YAML）
 ├── include/suspension_sim/
 │   ├── road_profile.hpp       # 路面模型抽象基类 + 多种实现（策略模式）
-│   └── quarter_car_model.hpp  # 二自由度四分之一车模型类（欧拉积分）
+│   ├── suspension_model.hpp   # 悬架模型抽象基类（纯虚接口）
+│   ├── quarter_car_model.hpp  # 二自由度四分之一车模型（继承基类）
+│   └── params_loader.hpp      # 参数加载 + 模型工厂声明
 ├── msg/
 │   └── SuspensionState.msg    # 自定义消息：悬架系统状态
 └── src/
     ├── road_input_node.cpp    # 发布节点：100 Hz 发布 road_height
     ├── road_display_node.cpp  # 订阅节点：订阅并打印 road_height
-    └── model_node.cpp         # 模型节点：订阅路面→更新模型→发布 suspension_state
+    ├── model_node.cpp         # 模型节点：订阅路面→更新模型→发布 suspension_state
+    ├── params_loader.cpp      # loadParams / createModel 实现
+    └── test_model.cpp         # 独立测试程序（YAML→模型→仿真）
 ```
 
 三个节点通过话题通信：
@@ -117,7 +123,31 @@ body_accel: 0.0352
 
 字段说明：`xs`/`xus` 为簧上/簧下质量位移，`xs_dot`/`xus_dot` 为速度，`body_accel` 为车身加速度（详见 `msg/SuspensionState.msg`）。
 
-### 3.4 可选：用命令行工具观察（终端 C）
+### 3.4 独立测试程序（不依赖 ROS，快速验证模型）
+
+`test_model` 直接从 YAML 加载参数、用工厂构造模型并仿真打印，不需要启动任何 ROS 节点：
+
+```bash
+# 使用默认配置 config/model_params.yaml
+ros2 run suspension_sim test_model
+
+# 或指定自己的 YAML
+ros2 run suspension_sim test_model /path/to/your.yaml
+```
+
+输出示例（正弦路面激励下的状态）：
+```
+[loadParams] 已从 .../config/model_params.yaml 加载参数: type=quarter_car_2dof ...
+模型类型   : quarter_car_2dof（状态维数 4）
+t(s)  road(m)  xs(m)     xus(m)    xs_dot    xus_dot   accel(m/s^2)
+  0.00  0.0000    0.0000    0.0000    0.0000    0.0000     -0.0000
+  1.00  0.0000   -0.0017   -0.0019   -0.2349   -0.1619      0.2018
+  ...
+```
+
+> 想修改物理参数？直接编辑 `config/model_params.yaml` 里的 `ms`/`mus`/`ks`/`cs`/`kt`，重新运行 `test_model` 即可，无需重新编译。
+
+### 3.5 可选：用命令行工具观察（终端 C）
 
 再开一个终端，加载环境后：
 

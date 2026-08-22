@@ -40,7 +40,7 @@ public:
     return amplitude_ * std::sin(2.0 * M_PI * frequency_ * t);
   }
 
-  std::string name() const override { return "sine"; }
+  std::string name() const override {return "sine";}
 
 private:
   double amplitude_;
@@ -62,7 +62,7 @@ public:
     return (phase < half) ? amplitude_ : -amplitude_;
   }
 
-  std::string name() const override { return "square"; }
+  std::string name() const override {return "square";}
 
 private:
   double amplitude_;
@@ -92,7 +92,7 @@ public:
     return last_value_;
   }
 
-  std::string name() const override { return "random"; }
+  std::string name() const override {return "random";}
 
 private:
   double amplitude_;
@@ -119,7 +119,7 @@ public:
     return 0.0;
   }
 
-  std::string name() const override { return "speed_bump"; }
+  std::string name() const override {return "speed_bump";}
 
 private:
   double height_;

@@ -6,6 +6,10 @@
 
 #include <Eigen/Dense>
 
+#include <string>
+
+#include "suspension_sim/suspension_model.hpp"
+
 namespace suspension_sim
 {
 
@@ -22,7 +26,7 @@ namespace suspension_sim
 ///   mus * xus_ddot =  ks*(xs - xus) + cs*(xs_dot - xus_dot) - kt*(xus - road)
 ///
 /// 采用显式欧拉积分进行数值求解。
-class QuarterCarModel2DOF
+class QuarterCarModel2DOF : public SuspensionModel
 {
 public:
   QuarterCarModel2DOF(double ms, double mus, double ks, double cs, double kt)
@@ -32,14 +36,14 @@ public:
   }
 
   /// 重置状态为零
-  void reset()
+  void reset() override
   {
     state_.setZero();
     body_accel_ = 0.0;
   }
 
   /// 以给定路面高度和步长更新一步（显式欧拉积分）
-  void update(double road_height, double dt)
+  void update(double road_height, double dt) override
   {
     const double xs = state_(0);
     const double xus = state_(1);
@@ -62,10 +66,16 @@ public:
   }
 
   // Getters
-  Eigen::Vector4d getState() const { return state_; }
+  Eigen::VectorXd getState() const override {return state_;}
 
   /// 最近一步的车身（簧上质量）加速度 (m/s^2)
-  double getBodyAccel() const { return body_accel_; }
+  double getBodyAccel() const override {return body_accel_;}
+
+  /// 状态向量的维数（4：xs, xus, xs_dot, xus_dot）
+  std::size_t stateSize() const override {return 4u;}
+
+  /// 模型名称（与 YAML 中 type 字段 / 工厂匹配）
+  std::string name() const override {return "quarter_car_2dof";}
 
 private:
   double ms_;
