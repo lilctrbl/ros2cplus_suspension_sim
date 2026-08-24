@@ -22,9 +22,11 @@ namespace suspension_sim
 ///   - xus_dot  簧下质量速度 (m/s)
 ///
 /// 动力学方程（两自由度悬架模型，参考 Simulink 模型）：
-///   ms * xs_ddot  = -ks*(xs - xus) - cs*(xs_dot - xus_dot)
-///   mus * xus_ddot =  ks*(xs - xus) + cs*(xs_dot - xus_dot) - kt*(xus - road)
+///   ms * xs_ddot  = -ks*(xs - xus) - cs*(xs_dot - xus_dot) + u
+///   mus * xus_ddot =  ks*(xs - xus) + cs*(xs_dot - xus_dot) - kt*(xus - road) - u
 ///
+/// 其中 u 为主动悬架控制力（正值作用于簧上质量向上、簧下质量向下，
+/// 即推力方向）。当 u = 0 时退化为被动悬架。
 /// 采用显式欧拉积分进行数值求解。
 class QuarterCarModel2DOF : public SuspensionModel
 {
@@ -42,18 +44,20 @@ public:
     body_accel_ = 0.0;
   }
 
-  /// 以给定路面高度和步长更新一步（显式欧拉积分）
-  void update(double road_height, double dt) override
+  /// 以给定路面高度、主动控制力和步长更新一步（显式欧拉积分）
+  void update(double road_height, double dt, double control_force = 0.0) override
   {
     const double xs = state_(0);
     const double xus = state_(1);
     const double xs_dot = state_(2);
     const double xus_dot = state_(3);
 
-    // 状态方程（参考 Simulink 模型）
-    const double xs_ddot = (-ks_ * (xs - xus) - cs_ * (xs_dot - xus_dot)) / ms_;
+    // 状态方程（参考 Simulink 模型；control_force > 0 时为推力）
+    const double xs_ddot =
+      (-ks_ * (xs - xus) - cs_ * (xs_dot - xus_dot) + control_force) / ms_;
     const double xus_ddot =
-      (ks_ * (xs - xus) + cs_ * (xs_dot - xus_dot) - kt_ * (xus - road_height)) / mus_;
+      (ks_ * (xs - xus) + cs_ * (xs_dot - xus_dot) -
+      kt_ * (xus - road_height) - control_force) / mus_;
 
     // 记录最近一步的车身加速度，供 getBodyAccel() 输出
     body_accel_ = xs_ddot;

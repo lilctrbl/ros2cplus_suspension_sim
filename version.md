@@ -1,8 +1,61 @@
 # 版本历史
 
-## v1.3（当前版本）
+## v2.1（当前版本）
 
-发布日期：2026-08-21
+发布日期：2026-08-24
+
+### 新增功能
+
+- **LQR 控制器 `LqrController`**
+  - 新增 `include/suspension_sim/lqr_controller.hpp` + `src/lqr_controller.cpp`
+  - 成员：`Eigen::MatrixXd A_, B_, K_, Q_, R_`，构造函数传入 A/B/Q/R 并自动调用 `computeK()`
+  - `computeK()`：求解**离散代数 Riccati 方程（DARE）**（不动点迭代），计算最优状态反馈增益 $K = (R + B^T P B)^{-1} B^T P A$
+  - 控制律：`computeForce(x, x_ref)` 实现 $u = -K(x - x_{ref})$（`x_ref` 默认 0）
+  - 说明：Eigen 本身不提供 Riccati 求解器（`care()` 是 MATLAB/SciPy 的接口且针对连续方程），故采用 DARE 不动点迭代
+- **LQR 控制器节点 `controller_node`**
+  - 新增 `src/controller_node.cpp`：订阅 `suspension_state`，发布 `control_force`（`std_msgs::msg::Float64`）
+  - Q、R 对角线元素通过 ROS 参数加载：`lqr_q0..lqr_q3`（状态加权）、`lqr_r0`（输入加权）
+  - 使用**标准悬架状态空间**：$z = [x_s-x_{us},\ x_{us}-r,\ \dot x_s,\ \dot x_{us}]$（动行程、轮胎变形、速度）
+  - 采用**零阶保持（ZOH）离散化**（增广矩阵指数 `exp(A·dt)`）
+  - 控制律：$u = -K \cdot z$，$x_{ref}=0$（悬架平衡点），后续可扩展为参考跟踪
+- **模型接入主动力，实现闭环**
+  - `SuspensionModel::update()` 增加 `control_force` 参数（默认 0）
+  - `QuarterCarModel2DOF` 动力学加入主动控制力 $u$（$F_s=+u,\ F_{us}=-u$）
+  - `model_node` 新增订阅 `control_force` 话题，未收到时控制力为 0（退化为被动悬架）
+- **独立测试程序 `test_lqr`**
+  - 新增 `src/test_lqr.cpp`，不依赖 rclcpp：构造 LQR → 初始条件响应仿真 → 对比开环/闭环衰减
+
+### 配置变更
+
+- `CMakeLists.txt`：新增 `controller_node`、`test_lqr` 目标，`lqr_controller.cpp` 源文件
+- `package.xml`：版本号升至 `2.1.0`
+- `config/model_params.yaml`：不变（物理参数与控制器默认一致）
+
+### 文档更新
+
+- `README.md`：新增 LQR 控制器说明、`controller_node` / `test_lqr` 运行方式、闭环验证结果
+- `RUNNING.md`：新增闭环运行步骤（三节点联调）
+
+### 验证结果（闭环对比）
+
+| 指标 | 开环（被动） | 闭环（LQR） | 改善 |
+| ---- | ------------ | ----------- | ---- |
+| 车身加速度 RMS（m/s²） | 0.2947 | 0.2224 | **↓24.5%** |
+
+> 闭环验证：`road_input_node` + `model_node` + `controller_node` 三节点联调，
+> 正弦路面 0.05 m / 0.5 Hz，采样 `suspension_state.body_accel` 计算 RMS。
+
+### 本次新掌握知识点
+
+- 离散代数 Riccati 方程（DARE）不动点迭代求解；Eigen 无内置 Riccati 求解器，`care()` 是 MATLAB 接口且针对连续方程
+- 悬架 LQR 应使用**悬架状态空间**（动行程 + 轮胎变形 + 速度）而非绝对位移，否则系统不完全可控（可控性矩阵秩 < n）导致 Riccati 无解
+- 零阶保持（ZOH）离散化优于显式欧拉：`unsupported/Eigen/MatrixFunctions` 提供矩阵指数 `exp()`
+- 显式欧拉在车身高频模态（~11 Hz）下数值不稳定，验证闭环需用离散状态方程或减小步长
+- ROS 闭环联调：`model_node` 订阅 `control_force` 形成闭环，QoS 队列深度 10
+
+---
+
+## v1.3
 
 ### 新增功能
 

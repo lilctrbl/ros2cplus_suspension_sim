@@ -12,24 +12,29 @@ suspension_sim/
 │   ├── road_profile.hpp       # 路面模型抽象基类 + 多种实现（策略模式）
 │   ├── suspension_model.hpp   # 悬架模型抽象基类（纯虚接口）
 │   ├── quarter_car_model.hpp  # 二自由度四分之一车模型（继承基类）
-│   └── params_loader.hpp      # 参数加载 + 模型工厂声明
+│   ├── params_loader.hpp      # 参数加载 + 模型工厂声明
+│   └── lqr_controller.hpp     # LQR 控制器（DARE 求解 + 状态反馈）
 ├── msg/
 │   └── SuspensionState.msg    # 自定义消息：悬架系统状态
 └── src/
     ├── road_input_node.cpp    # 发布节点：100 Hz 发布 road_height
     ├── road_display_node.cpp  # 订阅节点：订阅并打印 road_height
-    ├── model_node.cpp         # 模型节点：订阅路面→更新模型→发布 suspension_state
+    ├── model_node.cpp         # 模型节点：订阅路面+控制力→发布 suspension_state
+    ├── controller_node.cpp    # LQR 控制器节点：订阅状态→发布 control_force
     ├── params_loader.cpp      # loadParams / createModel 实现
-    └── test_model.cpp         # 独立测试程序（YAML→模型→仿真）
+    ├── lqr_controller.cpp     # LqrController 实现
+    ├── test_model.cpp         # 独立测试程序（YAML→模型→仿真）
+    └── test_lqr.cpp           # 独立测试程序（LQR→初始条件响应）
 ```
 
-三个节点通过话题通信：
+节点通过话题通信：
 
 ```mermaid
 graph LR
-    A[road_input_node<br/>发布者] -->|topic: road_height| B[road_display_node<br/>订阅者]
-    A -->|topic: road_height| C[model_node<br/>订阅+发布]
-    C -->|topic: suspension_state| D[外部观察者<br/>ros2 topic echo]
+    A[road_input_node<br/>发布者] -->|topic: road_height| C[model_node<br/>订阅+发布]
+    C -->|topic: suspension_state| D[controller_node<br/>LQR 控制器]
+    D -->|topic: control_force| C
+    C -->|topic: suspension_state| E[外部观察者<br/>ros2 topic echo]
 ```
 
 ## 1. 编译
@@ -147,7 +152,71 @@ t(s)  road(m)  xs(m)     xus(m)    xs_dot    xus_dot   accel(m/s^2)
 
 > 想修改物理参数？直接编辑 `config/model_params.yaml` 里的 `ms`/`mus`/`ks`/`cs`/`kt`，重新运行 `test_model` 即可，无需重新编译。
 
-### 3.5 可选：用命令行工具观察（终端 C）
+### 3.5 LQR 主动悬架闭环（三节点联调）
+
+LQR 控制器订阅模型状态、计算最优控制力并反馈给模型，形成闭环：
+
+**终端 B** 运行模型节点（保持运行）：
+```bash
+ros2 run suspension_sim model_node
+```
+
+**终端 C** 运行 LQR 控制器：
+```bash
+ros2 run suspension_sim controller_node
+```
+
+应看到日志（打印最优增益 K）：
+```
+[INFO] [controller_node]: controller_node started: subscribing 'suspension_state', publishing 'control_force' (dt=0.0100 s). K = [16549.7669, 13327.5845, 2433.7114, -386.7643]
+```
+
+**终端 D** 观察控制力：
+```bash
+ros2 topic echo control_force --once
+```
+```
+data: -116.1821041572361
+```
+
+**验证闭环效果**：对比开环/闭环的车身加速度 RMS
+
+```bash
+# 闭环（controller_node 运行中）采样
+ros2 topic echo suspension_state --field body_accel | head -50
+# 停止控制器后（Ctrl+C 或 pkill -9 -f controller_node）再采样一次
+```
+
+实测结果（正弦路面 0.05 m / 0.5 Hz）：
+
+| 指标 | 开环（被动） | 闭环（LQR） | 改善 |
+| ---- | ------------ | ----------- | ---- |
+| 车身加速度 RMS（m/s²） | 0.2947 | 0.2224 | **↓24.5%** |
+
+**调整控制器权重**：
+```bash
+ros2 run suspension_sim controller_node --ros-args -p lqr_q0:=5000.0 -p lqr_q1:=5000.0 -p lqr_r0:=1e-5
+```
+
+### 3.6 独立 LQR 测试程序（不依赖 ROS）
+
+`test_lqr` 直接验证 DARE 求解与闭环衰减：
+
+```bash
+ros2 run suspension_sim test_lqr
+```
+
+输出示例（初始条件响应：悬架压缩 5 cm，闭环衰减更快）：
+```
+K = [  16549.77   13327.58    2433.71    -386.76]
+
+===== 初始条件响应对比（悬架压缩 5 cm，z1 = xs - xus）=====
+              开环(被动)     闭环(LQR)
+动行程峰值 z1 :    0.04907 m     0.04804 m
+衰减到 10%   :      0.250 s       0.220 s
+```
+
+### 3.7 可选：用命令行工具观察（终端 D）
 
 再开一个终端，加载环境后：
 
@@ -185,6 +254,8 @@ ros2 param set /road_input_node road_profile sine      # 回到正弦
 ```bash
 pkill -9 -f road_input_node
 pkill -9 -f road_display_node
+pkill -9 -f model_node
+pkill -9 -f controller_node
 ```
 
 ## 6. 常见问题
@@ -194,6 +265,8 @@ pkill -9 -f road_display_node
 | `ros2: command not found` | 未加载 ROS 环境 | `source /opt/ros/jazzy/setup.bash` |
 | `Package 'suspension_sim' not found` | 未加载 install 环境 | `source ~/suspension_ws/install/setup.bash` |
 | `road_display_node` / `model_node` 没有任何输出 | 发布节点没启动，或话题名不一致 | 先启动 `road_input_node`；确认订阅/发布话题名一致 |
+| `controller_node` 无输出 / K 不打印 | 未订阅到 `suspension_state` | 先启动 `model_node`；确认话题 QoS 一致 |
+| `control_force` 一直为 0 | 模型未订阅到控制力 | 确认 `controller_node` 与 `model_node` 同时运行 |
 | `Eigen/Dense: No such file`（编译错误） | 未链接 Eigen 头文件 | CMake 中 `target_link_libraries(model_node Eigen3::Eigen)` |
 | `ament_target_dependencies() ... 'suspension_sim' was not found` | 消息目标是 `rosidl` 生成目标，不是 `find_package` 的包 | 改用 `rosidl_get_typesupport_target()` 获取目标再 `target_link_libraries` |
 | `param set` 连到旧节点 | 有残留进程占用节点名 | `pkill -9 -f road_input_node` 后重试 |

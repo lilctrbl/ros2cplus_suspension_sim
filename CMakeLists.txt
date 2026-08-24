@@ -60,6 +60,18 @@ rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} rosidl_typesupport_cpp)
 target_link_libraries(model_node "${cpp_typesupport_target}")
 
+# LQR 控制器节点：订阅 suspension_state，发布 control_force
+add_executable(controller_node
+  src/controller_node.cpp
+  src/lqr_controller.cpp)
+target_include_directories(controller_node PRIVATE
+  include)
+ament_target_dependencies(controller_node rclcpp std_msgs)
+target_link_libraries(controller_node Eigen3::Eigen)
+rosidl_get_typesupport_target(controller_cpp_typesupport_target
+  ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(controller_node "${controller_cpp_typesupport_target}")
+
 # 独立测试程序：加载 YAML → 构造模型 → 仿真打印（不依赖 rclcpp）
 add_executable(test_model
   src/test_model.cpp
@@ -70,7 +82,16 @@ target_compile_definitions(test_model PRIVATE
   MODEL_YAML="${MODEL_YAML_DEFAULT}")
 target_link_libraries(test_model Eigen3::Eigen yaml-cpp)
 
-install(TARGETS road_input_node road_display_node model_node test_model
+# 独立测试程序：LQR 闭环仿真对比（不依赖 rclcpp）
+add_executable(test_lqr
+  src/test_lqr.cpp
+  src/lqr_controller.cpp)
+target_include_directories(test_lqr PRIVATE
+  include)
+target_link_libraries(test_lqr Eigen3::Eigen)
+
+install(TARGETS road_input_node road_display_node model_node controller_node
+  test_model test_lqr
   DESTINATION lib/${PROJECT_NAME})
 
 # 安装默认 YAML 配置

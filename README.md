@@ -118,15 +118,19 @@ suspension_sim/
 │       ├── road_profile.hpp     # 路面模型抽象基类与多种实现（策略模式）
 │       ├── suspension_model.hpp # 悬架模型抽象基类（纯虚接口）
 │       ├── quarter_car_model.hpp# 二自由度四分之一车模型（继承基类）
-│       └── params_loader.hpp    # 参数加载与模型工厂
+│       ├── params_loader.hpp    # 参数加载与模型工厂
+│       └── lqr_controller.hpp   # LQR 控制器（DARE 求解 + 状态反馈）
 ├── msg/
 │   └── SuspensionState.msg      # 自定义消息：悬架系统状态
 ├── src/
 │   ├── road_input_node.cpp      # 路面输入节点（100 Hz 发布 road_height）
 │   ├── road_display_node.cpp    # 显示节点（订阅并打印 road_height）
-│   ├── model_node.cpp           # 模型节点（订阅路面→更新模型→发布状态）
+│   ├── model_node.cpp           # 模型节点（订阅路面+控制力→更新模型→发布状态）
+│   ├── controller_node.cpp      # LQR 控制器节点（订阅状态→发布控制力）
 │   ├── params_loader.cpp        # loadParams / createModel 实现
-│   └── test_model.cpp           # 独立测试程序（YAML→模型→仿真）
+│   ├── lqr_controller.cpp       # LqrController 实现（DARE + K 计算）
+│   ├── test_model.cpp           # 独立测试程序（YAML→模型→仿真）
+│   └── test_lqr.cpp             # 独立测试程序（LQR→初始条件响应）
 └── LICENSE                 # Apache-2.0 许可证
 ```
 
@@ -227,18 +231,109 @@ ros2 run suspension_sim test_model /path/to/your.yaml
 
 模型节点发布到 `suspension_state` 话题，字段包括：`time`、`road_height`、`xs`、`xus`、`xs_dot`、`xus_dot`、`body_accel`。后期可扩展（如悬架动行程、轮胎载荷）。
 
+## LQR 主动悬架控制
+
+### 控制原理
+
+LQR（线性二次型调节器）为离散系统 $x_{k+1} = Ax_k + Bu_k$ 求解**离散代数 Riccati 方程（DARE）**得到最优反馈增益 $K$，控制律 $u = -K(x - x_{ref})$。
+
+控制器使用**标准悬架状态空间**（平衡点为 0）：
+
+$$z = [z_1,\ z_2,\ z_3,\ z_4] = [x_s - x_{us},\ x_{us} - r,\ \dot x_s,\ \dot x_{us}]$$
+
+- $z_1$：悬架动行程（m）
+- $z_2$：轮胎变形（m）
+- $z_3$ / $z_4$：簧上 / 簧下质量速度（m/s）
+
+> 为什么不直接用绝对位移 `[xs, xus, ...]`？因为绝对位移包含不可控的积分模式
+> （可控性矩阵秩 < 4），会导致 DARE 无解。悬架坐标下系统完全可控。
+
+### `LqrController` 类
+
+`include/suspension_sim/lqr_controller.hpp`：
+
+- 成员：`Eigen::MatrixXd A_, B_, K_, Q_, R_`
+- 构造函数：传入 `A, B, Q, R`，自动调用 `computeK()`
+- `computeK()`：DARE 不动点迭代求解（Eigen 不提供 `care()`，那是 MATLAB/SciPy 的连续方程接口）
+- `computeForce(x, x_ref)`：$u = -K(x - x_{ref})$，`x_ref` 默认 0
+
+### 闭环运行（三节点联调）
+
+```bash
+# 终端 A：发布路面
+ros2 run suspension_sim road_input_node
+
+# 终端 B：运行模型节点（订阅路面 + 控制力）
+ros2 run suspension_sim model_node
+
+# 终端 C：运行 LQR 控制器（订阅状态 → 发布控制力）
+ros2 run suspension_sim controller_node
+
+# 终端 D：观察
+ros2 topic echo control_force --once
+ros2 topic echo suspension_state --once
+```
+
+### 控制器参数（ROS 参数）
+
+| 参数名 | 类型 | 默认值 | 说明 |
+| ------ | ---- | ------ | ---- |
+| `lqr_q0` | double | `1000` | 动行程 $z_1^2$ 加权 |
+| `lqr_q1` | double | `1000` | 轮胎变形 $z_2^2$ 加权 |
+| `lqr_q2` | double | `1.0` | 簧上速度 $z_3^2$ 加权 |
+| `lqr_q3` | double | `1.0` | 簧下速度 $z_4^2$ 加权 |
+| `lqr_r0` | double | `1e-6` | 控制力 $u^2$ 加权 |
+| `rate` | double | `100.0` | 控制频率（Hz） |
+| `ms`/`mus`/`ks`/`cs`/`kt` | double | 见 YAML | 物理参数（离散化用） |
+
+示例：启动时指定权重
+
+```bash
+ros2 run suspension_sim controller_node --ros-args \
+  -p lqr_q0:=5000.0 -p lqr_q1:=5000.0 -p lqr_r0:=1e-5
+```
+
+### 独立测试程序 `test_lqr`
+
+不依赖 ROS，验证 DARE 求解与闭环衰减：
+
+```bash
+ros2 run suspension_sim test_lqr
+```
+
+输出示例（初始条件响应：悬架压缩 5 cm）：
+
+```
+K = [  16549.77   13327.58    2433.71    -386.76]
+
+===== 初始条件响应对比（悬架压缩 5 cm，z1 = xs - xus）=====
+              开环(被动)     闭环(LQR)
+动行程峰值 z1 :    0.04907 m     0.04804 m
+衰减到 10%   :      0.250 s       0.220 s
+```
+
+### 闭环验证结果
+
+正弦路面（0.05 m / 0.5 Hz）三节点联调，采样 `body_accel` 计算 RMS：
+
+| 指标 | 开环（被动） | 闭环（LQR） | 改善 |
+| ---- | ------------ | ----------- | ---- |
+| 车身加速度 RMS（m/s²） | 0.2947 | 0.2224 | **↓24.5%** |
+
 ## 节点
 
 | 节点 | 文件 | 作用 |
 | ---- | ---- | ---- |
 | `road_input_node` | `src/road_input_node.cpp` | 发布者：100 Hz 发布路面高度到 `road_height` |
 | `road_display_node` | `src/road_display_node.cpp` | 订阅者：订阅 `road_height` 并打印高度值 |
-| `model_node` | `src/model_node.cpp` | 订阅 `road_height`，更新悬架模型，发布 `suspension_state` |
-| `test_model` | `src/test_model.cpp` | 独立测试程序：YAML 加载 → 工厂构造模型 → 仿真打印 |
+| `model_node` | `src/model_node.cpp` | 订阅 `road_height` + `control_force`，更新悬架模型，发布 `suspension_state` |
+| `controller_node` | `src/controller_node.cpp` | LQR 控制器：订阅 `suspension_state`，发布 `control_force` |
+| `test_model` | `src/test_model.cpp` | 独立测试：YAML 加载 → 模型 → 仿真打印 |
+| `test_lqr` | `src/test_lqr.cpp` | 独立测试：LQR 求解 → 初始条件响应对比 |
 
 ## 版本
 
-当前版本：**v1.3**，详见 [version.md](version.md)。
+当前版本：**v2.1**，详见 [version.md](version.md)。
 
 ## 许可
 

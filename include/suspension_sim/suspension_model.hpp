@@ -25,8 +25,8 @@ public:
   /// 重置状态为零
   virtual void reset() = 0;
 
-  /// 以给定路面高度和步长更新一步（由具体模型决定积分方式）
-  virtual void update(double road_height, double dt) = 0;
+  /// 以给定路面高度、主动控制力和步长更新一步（由具体模型决定积分方式）
+  virtual void update(double road_height, double dt, double control_force = 0.0) = 0;
 
   /// 当前状态向量（各模型的维度可能不同，见 stateSize()）
   virtual Eigen::VectorXd getState() const = 0;

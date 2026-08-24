@@ -15,15 +15,17 @@ using namespace std::chrono_literals;
 namespace suspension_sim
 {
 
-/// @brief 悬架模型节点：订阅路面高度，更新悬架模型并发布状态
+/// @brief 悬架模型节点：订阅路面高度与主动控制力，更新悬架模型并发布状态
 ///
 /// 订阅话题：road_height (std_msgs::msg::Float64)
+///           control_force (std_msgs::msg::Float64，来自 LQR 控制器，可选)
 /// 发布话题：suspension_state (suspension_sim::msg::SuspensionState)
 /// 定时器以固定周期（默认 100 Hz / 10 ms）驱动模型积分一步。
 ///
 /// 模型通过基类指针 std::unique_ptr<SuspensionModel> 持有：
 /// 具体模型由 YAML 配置（config/model_params.yaml，参数 `model_yaml`）
 /// 经 loadParams + createModel 工厂构造，也支持 ROS 参数覆盖。
+/// 未订阅到 control_force 时控制力为 0（退化为被动悬架）。
 class ModelNode : public rclcpp::Node
 {
 public:
@@ -66,6 +68,14 @@ public:
         latest_road_height_ = msg->data;
       });
 
+    // 订阅 LQR 控制器输出的主动控制力（controller_node 存在时才收到消息）
+    control_sub_ = this->create_subscription<std_msgs::msg::Float64>(
+      "control_force",
+      10,
+      [this](const std_msgs::msg::Float64::SharedPtr msg) {
+        latest_control_force_ = msg->data;
+      });
+
     publisher_ = this->create_publisher<suspension_sim::msg::SuspensionState>(
       "suspension_state", 10);
 
@@ -77,8 +87,8 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "model_node started: model='%s' subscribing 'road_height', publishing "
-      "'suspension_state' at %.1f Hz (yaml=%s)",
+      "model_node started: model='%s' subscribing 'road_height' and "
+      "'control_force', publishing 'suspension_state' at %.1f Hz (yaml=%s)",
       model_->name().c_str(), get_parameter("rate").as_double(), yaml_file.c_str());
   }
 
@@ -86,7 +96,8 @@ private:
   void on_timer()
   {
     const double dt = 1.0 / get_parameter("rate").as_double();
-    model_->update(latest_road_height_, dt);
+    // 传入最近一次的控制力（未收到则为 0，退化为被动悬架）
+    model_->update(latest_road_height_, dt, latest_control_force_);
 
     auto msg = suspension_sim::msg::SuspensionState();
     msg.time = (this->now() - start_time_).seconds();
@@ -103,11 +114,13 @@ private:
   }
 
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr control_sub_;
   rclcpp::Publisher<suspension_sim::msg::SuspensionState>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::unique_ptr<SuspensionModel> model_;  // 基类指针
   const rclcpp::Time start_time_;
   double latest_road_height_ = 0.0;
+  double latest_control_force_ = 0.0;  // 最近一次控制力（N）
 };
 
 }  // namespace suspension_sim
