@@ -1,0 +1,11 @@
+# 请求：空（无输入，服务端返回当前状态估计）
+---
+# 响应：悬架系统状态估计值（单位：位移 m，速度 m/s，加速度 m/s^2）
+# 各字段含义与 SuspensionState.msg 一致，但由卡尔曼滤波器估计得出
+float64 time          # 估计时刻（相对服务端节点启动的时间，s）
+float64 road_height   # 路面高度估计 (m)
+float64 xs            # 簧上质量位移估计 (m)
+float64 xus           # 簧下质量位移估计 (m)
+float64 xs_dot        # 簧上质量速度估计 (m/s)
+float64 xus_dot       # 簧下质量速度估计 (m/s)
+float64 body_accel    # 车身（簧上）加速度估计 (m/s^2)

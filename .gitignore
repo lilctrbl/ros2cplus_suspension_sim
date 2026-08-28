@@ -2,50 +2,6 @@
 build/
 install/
 log/
-*.log
-
-# ===== colcon 相关 =====
-.catkin_tools/
-.builder/
-.colcon/
-
-# ===== CMake 生成物 =====
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-CTestTestfile.cmake
-Makefile
-*.cmake
-!**/cmake/*.cmake
-compile_commands.json
-
-# ===== 可执行文件 / 对象文件 =====
-*.o
-*.a
-*.so
-*.so.*
-*.dll
-*.dylib
-*.exe
-
-# ===== IDE / 编辑器 =====
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-.DS_Store
-
-# ===== Python (如果之后添加 Python 节点) =====
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-
-# ===== 测试产物 =====
-test_results/
-.coverage/
 
 # ===== 运行日志 / 临时文件 =====
 /tmp/
@@ -53,6 +9,12 @@ test_results/
 *.out
 *.pyc
 core
+
+# ===== rosbag2 录制文件 =====
+*.bag
+*.db3
+*.db3-wal
+*.db3-shm
 
 # ===== 编译缓存 / 系统 =====
 .vscode/**

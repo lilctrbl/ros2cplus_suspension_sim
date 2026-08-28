@@ -1,6 +1,51 @@
 # 版本历史
 
-## v2.1（当前版本）
+## v2.2（当前版本）
+
+发布日期：2026-08-28
+
+### 新增功能
+
+- **卡尔曼滤波器 `KalmanFilter`**
+  - 新增 `include/suspension_sim/kalman_filter.hpp` + `src/kalman_filter.cpp`
+  - 成员：`Eigen::MatrixXd A_, B_, C_, Q_proc_, R_meas_`、`Eigen::VectorXd x_hat_`、`Eigen::MatrixXd P_`
+  - `predict(u)`：预测步 $\hat x \leftarrow A\hat x + Bu$、$P \leftarrow APA^T + Q_{proc}$
+  - `update(y)`：更新步，计算卡尔曼增益 $K = P^-C^T(CP^-C^T + R_{meas})^{-1}$，修正 $\hat x$ 与 $P$（Joseph 形式，数值更稳定）
+  - `step(y, u)`：一步预测 + 一步更新；`reset(x0, P0)` / `reset()` 重置状态
+  - 构造函数自动做维度一致性检查
+- **状态估计服务 `EstimateState.srv`**
+  - 新增 `srv/EstimateState.srv`：请求为空，响应为悬架系统状态估计值（`time`/`road_height`/`xs`/`xus`/`xs_dot`/`xus_dot`/`body_accel`）
+  - 经 `rosidl_generate_interfaces` 生成，服务名 `estimate_state`
+- **状态估计节点 `estimator_node`**
+  - 新增 `src/estimator_node.cpp`：订阅 `suspension_state`（含测量噪声），内部运行卡尔曼滤波
+  - 提供 `estimate_state` 服务，返回当前滤波状态均值
+  - 与 LQR 控制器共用悬架状态空间 $z=[x_s-x_{us}, x_{us}-r, \dot x_s, \dot x_{us}]$，ZOH 离散化
+  - 观测为 $z_2$（轮胎变形）与 $z_4$（簧下速度），噪声协方差由 ROS 参数 `measurement_noise` / `process_noise` 配置
+- **独立测试程序 `test_kalman`**
+  - 新增 `src/test_kalman.cpp`，不依赖 rclcpp：构造含噪悬架系统仿真 → 卡尔曼滤波 → 对比含噪观测 / 滤波估计的 RMSE
+
+### 配置变更
+
+- `CMakeLists.txt`：新增 `srv/EstimateState.srv` 到 `rosidl_generate_interfaces`；新增 `estimator_node`、`test_kalman` 目标与 `kalman_filter.cpp` 源文件
+- `package.xml`：版本号升至 `2.2.0`
+- `.gitignore`：整理为分类清晰的完整版（含 rosbag2 录制数据忽略）
+
+### 文档更新
+
+- `README.md`：新增卡尔曼滤波原理、`KalmanFilter` 类说明、`estimator_node` 运行与服务调用方式、`test_kalman`、节点表与项目结构更新
+- `RUNNING.md`：新增 `estimator_node` 手动运行步骤与服务调用示例
+- `version.md`：新增本版本记录
+
+### 本次新掌握知识点
+
+- 卡尔曼滤波标准五式（预测 / 更新两步递归）；Joseph 形式协方差更新比 $P=(I-KC)P^-$ 数值更稳定
+- ROS 2 服务（service）定义：`srv/*.srv`（`---` 分隔请求 / 响应），与消息一样由 `rosidl_generate_interfaces` 生成
+- 服务调用：`ros2 service call /节点名/服务名 包/类型 "{}"`；`ros2 interface show` 查看接口定义
+- 悬架坐标与绝对坐标的换算：$z_1+z_2 = x_s - r$、$z_2 = x_{us} - r$，恢复绝对量需借助路面高度 $r$
+
+---
+
+## v2.1
 
 发布日期：2026-08-24
 

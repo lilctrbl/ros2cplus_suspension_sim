@@ -13,18 +13,24 @@ suspension_sim/
 │   ├── suspension_model.hpp   # 悬架模型抽象基类（纯虚接口）
 │   ├── quarter_car_model.hpp  # 二自由度四分之一车模型（继承基类）
 │   ├── params_loader.hpp      # 参数加载 + 模型工厂声明
-│   └── lqr_controller.hpp     # LQR 控制器（DARE 求解 + 状态反馈）
+│   ├── lqr_controller.hpp     # LQR 控制器（DARE 求解 + 状态反馈）
+│   └── kalman_filter.hpp      # 卡尔曼滤波器（predict/update）
 ├── msg/
 │   └── SuspensionState.msg    # 自定义消息：悬架系统状态
+├── srv/
+│   └── EstimateState.srv      # 自定义服务：状态估计请求/响应
 └── src/
     ├── road_input_node.cpp    # 发布节点：100 Hz 发布 road_height
     ├── road_display_node.cpp  # 订阅节点：订阅并打印 road_height
     ├── model_node.cpp         # 模型节点：订阅路面+控制力→发布 suspension_state
     ├── controller_node.cpp    # LQR 控制器节点：订阅状态→发布 control_force
+    ├── estimator_node.cpp     # 状态估计节点：卡尔曼滤波 + estimate_state 服务
     ├── params_loader.cpp      # loadParams / createModel 实现
     ├── lqr_controller.cpp     # LqrController 实现
+    ├── kalman_filter.cpp      # KalmanFilter 实现
     ├── test_model.cpp         # 独立测试程序（YAML→模型→仿真）
-    └── test_lqr.cpp           # 独立测试程序（LQR→初始条件响应）
+    ├── test_lqr.cpp           # 独立测试程序（LQR→初始条件响应）
+    └── test_kalman.cpp        # 独立测试程序（卡尔曼→含噪观测 vs 估计）
 ```
 
 节点通过话题通信：
@@ -34,7 +40,9 @@ graph LR
     A[road_input_node<br/>发布者] -->|topic: road_height| C[model_node<br/>订阅+发布]
     C -->|topic: suspension_state| D[controller_node<br/>LQR 控制器]
     D -->|topic: control_force| C
-    C -->|topic: suspension_state| E[外部观察者<br/>ros2 topic echo]
+    C -->|topic: suspension_state| E[estimator_node<br/>卡尔曼滤波+服务]
+    C -->|topic: suspension_state| F[外部观察者<br/>ros2 topic echo]
+    E -->|service: estimate_state| G[外部请求者<br/>ros2 service call]
 ```
 
 ## 1. 编译
@@ -216,7 +224,65 @@ K = [  16549.77   13327.58    2433.71    -386.76]
 衰减到 10%   :      0.250 s       0.220 s
 ```
 
-### 3.7 可选：用命令行工具观察（终端 D）
+### 3.7 卡尔曼滤波状态估计（服务调用）
+
+状态估计节点 `estimator_node` 订阅含噪声的 `suspension_state`，内部用卡尔曼滤波平滑状态，并提供 `estimate_state` 服务返回估计值。
+
+**终端 B** 运行模型节点（保持运行）：
+```bash
+ros2 run suspension_sim model_node
+```
+
+**终端 C** 运行状态估计节点：
+```bash
+ros2 run suspension_sim estimator_node
+```
+
+应看到日志：
+```
+[INFO] [estimator_node]: estimator_node started: subscribing 'suspension_state', serving 'estimate_state' (dt=0.0100 s, sig_y=1.0e-04, sig_w=1.0e-06)
+```
+
+**终端 D** 调用估计服务（请求为空，`{}`）：
+```bash
+ros2 service call /estimator_node/estimate_state suspension_sim/srv/EstimateState "{}"
+```
+
+应看到类似输出（服务端返回当前状态估计）：
+```
+requester: making request: suspension_sim.srv.EstimateState_Request()
+
+response:
+suspension_sim.srv.EstimateState_Response(time=1.5200000000000002, road_height=0.04972, xs=0.03812, xus=0.04789, xs_dot=0.0124, xus_dot=0.0371, body_accel=0.0)
+```
+
+查看服务与接口定义：
+```bash
+ros2 service list
+ros2 interface show suspension_sim/srv/EstimateState
+```
+
+### 3.8 独立卡尔曼测试程序（不依赖 ROS）
+
+`test_kalman` 直接验证卡尔曼滤波效果（含噪观测 vs 滤波估计的 RMSE）：
+
+```bash
+ros2 run suspension_sim test_kalman
+```
+
+输出示例（滤波后 RMSE 应明显小于含噪观测）：
+```
+===== 卡尔曼滤波测试（正弦路面 0.05 m / 0.5 Hz，20 s）=====
+测量噪声 std = 1.0e-03，过程噪声 std = 1.0e-05
+
+状态           含噪观测 RMSE      滤波估计 RMSE
+z1 动行程  :        --           0.000431 m
+z2 轮胎变形:  0.001048 m        0.000335 m
+z3 簧上速度:        --           0.000612 m/s
+z4 簧下速度:  0.001003 m/s      0.000587 m/s
+```
+
+### 3.9 可选：用命令行工具观察（终端 D）
 
 再开一个终端，加载环境后：
 
@@ -256,6 +322,7 @@ pkill -9 -f road_input_node
 pkill -9 -f road_display_node
 pkill -9 -f model_node
 pkill -9 -f controller_node
+pkill -9 -f estimator_node
 ```
 
 ## 6. 常见问题
@@ -267,6 +334,8 @@ pkill -9 -f controller_node
 | `road_display_node` / `model_node` 没有任何输出 | 发布节点没启动，或话题名不一致 | 先启动 `road_input_node`；确认订阅/发布话题名一致 |
 | `controller_node` 无输出 / K 不打印 | 未订阅到 `suspension_state` | 先启动 `model_node`；确认话题 QoS 一致 |
 | `control_force` 一直为 0 | 模型未订阅到控制力 | 确认 `controller_node` 与 `model_node` 同时运行 |
+| `estimator_node` 服务调用无响应 / 报错 | 未订阅到 `suspension_state` | 先启动 `model_node`；确认话题名与 QoS 一致 |
+| 服务响应 `road_height` / 位移一直为 0 | 估计器未收到任何测量 | 确保 `model_node` 已发布，`ros2 topic hz suspension_state` 有输出 |
 | `Eigen/Dense: No such file`（编译错误） | 未链接 Eigen 头文件 | CMake 中 `target_link_libraries(model_node Eigen3::Eigen)` |
 | `ament_target_dependencies() ... 'suspension_sim' was not found` | 消息目标是 `rosidl` 生成目标，不是 `find_package` 的包 | 改用 `rosidl_get_typesupport_target()` 获取目标再 `target_link_libraries` |
 | `param set` 连到旧节点 | 有残留进程占用节点名 | `pkill -9 -f road_input_node` 后重试 |

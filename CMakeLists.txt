@@ -17,9 +17,10 @@ find_package(rosidl_default_generators REQUIRED)
 # 编译期注入默认 YAML 配置路径（model_node / test_model 使用）
 set(MODEL_YAML_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/config/model_params.yaml")
 
-# 自定义消息
+# 自定义消息 + 服务
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SuspensionState.msg"
+  "srv/EstimateState.srv"
   DEPENDENCIES std_msgs
 )
 
@@ -90,8 +91,29 @@ target_include_directories(test_lqr PRIVATE
   include)
 target_link_libraries(test_lqr Eigen3::Eigen)
 
+# 状态估计节点：卡尔曼滤波订阅状态 + 提供服务
+add_executable(estimator_node
+  src/estimator_node.cpp
+  src/kalman_filter.cpp)
+target_include_directories(estimator_node PRIVATE
+  include)
+ament_target_dependencies(estimator_node rclcpp std_msgs)
+target_link_libraries(estimator_node Eigen3::Eigen)
+rosidl_get_typesupport_target(estimator_cpp_typesupport_target
+  ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(estimator_node "${estimator_cpp_typesupport_target}")
+
+# 独立测试程序：卡尔曼滤波效果对比（不依赖 rclcpp）
+add_executable(test_kalman
+  src/test_kalman.cpp
+  src/kalman_filter.cpp)
+target_include_directories(test_kalman PRIVATE
+  include)
+target_link_libraries(test_kalman Eigen3::Eigen)
+
 install(TARGETS road_input_node road_display_node model_node controller_node
-  test_model test_lqr
+  estimator_node
+  test_model test_lqr test_kalman
   DESTINATION lib/${PROJECT_NAME})
 
 # 安装默认 YAML 配置

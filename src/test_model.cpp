@@ -17,6 +17,13 @@
 #include "suspension_sim/params_loader.hpp"
 #include "suspension_sim/suspension_model.hpp"
 
+// 编译期由 CMake 注入默认 YAML 路径（target_compile_definitions: MODEL_YAML）。
+// 这里提供兜底默认值：避免 IDE 静态分析（未配置 CMake 宏）误报未定义，
+// 也保证脱离 CMake 直接编译时仍有可用默认值。
+#ifndef MODEL_YAML
+#define MODEL_YAML "config/model_params.yaml"
+#endif
+
 int main(int argc, char ** argv)
 {
   // 默认使用编译期注入的 YAML 路径（CMake 中定义），也可用命令行参数覆盖
