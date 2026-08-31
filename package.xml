@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>suspension_sim</name>
-  <version>2.2.0</version>
+  <version>2.3.0</version>
   <description>Apache-2.0</description>
   <maintainer email="vehicle-control@todo.todo">vehicle-control</maintainer>
   <license>Apache-2.0</license>
@@ -16,6 +16,7 @@
   <depend>Eigen3</depend>
   <depend>yaml-cpp-vendor</depend>
 
+  <exec_depend>ros2launch</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

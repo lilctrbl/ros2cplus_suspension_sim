@@ -32,6 +32,27 @@ colcon build --packages-select suspension_sim
 source install/setup.bash
 ```
 
+### 一键启动仿真（launch）
+
+同时启动路面、模型、估计、控制四个节点，无需手动开多个终端：
+
+```bash
+ros2 launch suspension_sim simulation.launch.py
+```
+
+支持命令行参数：`topic_prefix`（话题/服务统一加前缀重映射）、`road_profile`、
+`amplitude`、`frequency`、`rate`、`state_source`。
+
+```bash
+# 所有话题加 sim 前缀 + 方波路面
+ros2 launch suspension_sim simulation.launch.py topic_prefix:=sim road_profile:=square
+
+# 控制器改用直接订阅真值（不走估计服务）
+ros2 launch suspension_sim simulation.launch.py state_source:=topic
+```
+
+详见 [RUNNING.md](RUNNING.md)。
+
 ## 运行
 
 > 详细的编译运行步骤（含新手向说明）请见 [RUNNING.md](RUNNING.md)。
@@ -113,6 +134,8 @@ suspension_sim/
 ├── version.md              # 版本历史
 ├── config/
 │   └── model_params.yaml   # 悬架模型物理参数（YAML）
+├── launch/
+│   └── simulation.launch.py # 一键启动四节点（含话题重映射）
 ├── include/
 │   └── suspension_sim/
 │       ├── road_profile.hpp     # 路面模型抽象基类与多种实现（策略模式）
@@ -129,8 +152,8 @@ suspension_sim/
 │   ├── road_input_node.cpp      # 路面输入节点（100 Hz 发布 road_height）
 │   ├── road_display_node.cpp    # 显示节点（订阅并打印 road_height）
 │   ├── model_node.cpp           # 模型节点（订阅路面+控制力→更新模型→发布状态）
-│   ├── controller_node.cpp      # LQR 控制器节点（订阅状态→发布控制力）
-│   ├── estimator_node.cpp       # 状态估计节点（卡尔曼滤波 + estimate_state 服务）
+│   ├── controller_node.cpp      # LQR 控制器节点（调用估计服务/订阅状态→发布控制力）
+│   ├── estimator_node.cpp       # 状态估计节点（卡尔曼滤波 + 估计话题 + estimate_state 服务）
 │   ├── params_loader.cpp        # loadParams / createModel 实现
 │   ├── lqr_controller.cpp       # LqrController 实现（DARE + K 计算）
 │   ├── kalman_filter.cpp        # KalmanFilter 实现（predict/update）
@@ -330,15 +353,12 @@ K = [  16549.77   13327.58    2433.71    -386.76]
 
 ### 估计原理
 
-卡尔曼滤波器针对线性离散系统：
-$$x_{k+1} = A x_k + B u_k + w_k,\quad y_k = C x_k + v_k$$
-其中 $w \sim N(0, Q_{proc})$ 为过程噪声，$v \sim N(0, R_{meas})$ 为观测噪声。
-滤波分**预测 / 更新**两步递归，得到状态均值 $\hat x$ 与误差协方差 $P$：
+估计器与 LQR 控制器共用同一**悬架状态空间** $z = [z_1, z_2, z_3, z_4]$，观测为轮胎变形 $z_2$ 与簧下速度 $z_4$（含零均值高斯噪声）。
+
+卡尔曼滤波针对线性离散系统 $x_{k+1} = Ax_k + Bu_k + w_k$、$y_k = Cx_k + v_k$，其中 $w \sim N(0, Q_{proc})$、$v \sim N(0, R_{meas})$，预测 / 更新两步递归得到均值 $\hat x$ 与协方差 $P$：
 
 $$P^- = A P A^T + Q_{proc},\qquad K = P^- C^T (C P^- C^T + R_{meas})^{-1}$$
 $$\hat x = A\hat x + Bu + K\,(y - C(A\hat x + Bu)),\qquad P = (I - KC)P^-$$
-
-估计器与 LQR 控制器共用同一**悬架状态空间** $z = [z_1, z_2, z_3, z_4]$，观测为轮胎变形 $z_2$ 与簧下速度 $z_4$（含零均值高斯噪声，由 `R_meas` 表达）。
 
 ### `KalmanFilter` 类
 
@@ -353,10 +373,11 @@ $$\hat x = A\hat x + Bu + K\,(y - C(A\hat x + Bu)),\qquad P = (I - KC)P^-$$
 
 ### 状态估计节点 `estimator_node`
 
-订阅 `suspension_state`（含测量噪声的真值），内部运行卡尔曼滤波，并提供服务：
+订阅 `suspension_state`（含测量噪声的真值），内部运行卡尔曼滤波，并发布 / 提供服务：
 
-- 话题：订阅 `suspension_state`
-- 服务：`estimate_state`（`suspension_sim/srv/EstimateState`，请求为空，响应为 `SuspensionState` 形式的估计值）
+- 订阅：`suspension_state`
+- 发布：`estimated_state`（估计状态，`SuspensionState` 消息；供 `controller_node` 后期直接订阅）
+- 服务：`estimate_state`（`suspension_sim/srv/EstimateState`，请求为空，响应为估计值）
 
 ```bash
 # 终端 A：发布路面
@@ -370,6 +391,9 @@ ros2 run suspension_sim estimator_node
 
 # 终端 D：调用估计服务（请求为空）
 ros2 service call /estimator_node/estimate_state suspension_sim/srv/EstimateState "{}"
+
+# 查看估计话题
+ros2 topic echo estimated_state --once
 ```
 
 查看服务接口定义：
@@ -384,12 +408,13 @@ ros2 interface show suspension_sim/srv/EstimateState
 | ------ | ---- | ------ | ---- |
 | `measurement_noise` | double | `1e-4` | 观测噪声标准差（m 或 m/s） |
 | `process_noise` | double | `1e-6` | 过程噪声标准差 |
+| `add_noise` | bool | `true` | 是否在测量上叠加模拟传感器噪声（便于联调验证） |
 | `rate` | double | `100.0` | 模型更新频率（离散化用） |
 | `ms`/`mus`/`ks`/`cs`/`kt` | double | 见 YAML | 物理参数（离散化用） |
 
 ### 独立测试程序 `test_kalman`
 
-不依赖 ROS，验证卡尔曼滤波效果（含噪观测 vs 滤波估计的 RMSE）：
+不依赖 ROS，验证滤波效果（含噪观测 vs 估计的 RMSE）：
 
 ```bash
 ros2 run suspension_sim test_kalman
@@ -402,15 +427,15 @@ ros2 run suspension_sim test_kalman
 | `road_input_node` | `src/road_input_node.cpp` | 发布者：100 Hz 发布路面高度到 `road_height` |
 | `road_display_node` | `src/road_display_node.cpp` | 订阅者：订阅 `road_height` 并打印高度值 |
 | `model_node` | `src/model_node.cpp` | 订阅 `road_height` + `control_force`，更新悬架模型，发布 `suspension_state` |
-| `controller_node` | `src/controller_node.cpp` | LQR 控制器：订阅 `suspension_state`，发布 `control_force` |
-| `estimator_node` | `src/estimator_node.cpp` | 卡尔曼估计器：订阅 `suspension_state`，提供 `estimate_state` 服务 |
+| `controller_node` | `src/controller_node.cpp` | LQR 控制器：调用 `estimate_state` 服务（或订阅状态），发布 `control_force` |
+| `estimator_node` | `src/estimator_node.cpp` | 卡尔曼估计器：订阅 `suspension_state`，发布 `estimated_state`，提供 `estimate_state` 服务 |
 | `test_model` | `src/test_model.cpp` | 独立测试：YAML 加载 → 模型 → 仿真打印 |
 | `test_lqr` | `src/test_lqr.cpp` | 独立测试：LQR 求解 → 初始条件响应对比 |
 | `test_kalman` | `src/test_kalman.cpp` | 独立测试：卡尔曼滤波 → 含噪观测 vs 估计对比 |
 
 ## 版本
 
-当前版本：**v2.2**，详见 [version.md](version.md)。
+当前版本：**v2.3**，详见 [version.md](version.md)。
 
 ## 许可
 

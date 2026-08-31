@@ -1,6 +1,39 @@
 # 版本历史
 
-## v2.2（当前版本）
+## v2.3（当前版本）
+
+发布日期：2026-08-31
+
+### 新增功能
+
+- **`estimator_node` 发布估计话题**
+  - 新增发布话题 `estimated_state`（`SuspensionState` 消息），供 `controller_node` 后期改为直接订阅
+  - 新增参数 `add_noise`（默认 `true`）：在测量上叠加模拟传感器噪声，便于联调验证
+- **`controller_node` 通过服务获取估计状态**
+  - 新增参数 `state_source`（`service` / `topic`），默认 `service`：作为客户端周期调用 `estimate_state` 服务获取估计状态；`topic` 为旧行为（直接订阅 `suspension_state` 真值）
+  - 服务不可用时等待重试并告警
+- **一键启动 launch 文件 `simulation.launch.py`**
+  - 新增 `launch/simulation.launch.py`：同时启动 `road_input_node` / `model_node` / `estimator_node` / `controller_node` 四节点
+  - 支持命令行参数：`topic_prefix`（话题/服务统一加前缀重映射）、`road_profile`、`amplitude`、`frequency`、`rate`、`state_source`
+
+### 配置变更
+
+- `CMakeLists.txt`：`controller_node` 链接本包服务类型支持目标；新增 `launch` 目录安装
+- `package.xml`：版本号升至 `2.3.0`；新增 `<exec_depend>ros2launch</exec_depend>`
+
+### 文档更新
+
+- `README.md`：更新 `estimator_node` 发布估计话题与 `add_noise` 参数、`controller_node` 状态来源说明、launch 一键启动、节点表与项目结构更新
+- `RUNNING.md`：更新目录结构、数据流图；新增 `controller_node` 服务客户端联调与 launch 一键启动章节
+- `version.md`：新增本版本记录
+
+### 本次新掌握知识点
+
+- ROS 2 服务客户端：`create_client` + `wait_for_service` + `async_send_request`；返回 `FutureAndRequestId` 结构体，需取 `.future` 字段；`std::future` 无 `.then()`，用定时器轮询 `wait_for(0s)` 判断完成
+
+---
+
+## v2.2
 
 发布日期：2026-08-28
 

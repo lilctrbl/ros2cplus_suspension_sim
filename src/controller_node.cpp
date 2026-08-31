@@ -1,6 +1,7 @@
 // Copyright 2026
 // Apache-2.0
 
+#include <future>
 #include <memory>
 #include <string>
 
@@ -11,13 +12,20 @@
 
 #include "suspension_sim/lqr_controller.hpp"
 #include "suspension_sim/msg/suspension_state.hpp"
+#include "suspension_sim/srv/estimate_state.hpp"
+
+using namespace std::chrono_literals;
 
 namespace suspension_sim
 {
 
 /// @brief LQR 控制器节点
 ///
-/// 订阅话题：suspension_state (suspension_sim::msg::SuspensionState)
+/// 状态来源（由参数 `state_source` 选择）：
+///   - "service"（默认）：作为客户端调用 estimator_node 的 estimate_state 服务
+///     获取*估计状态*；服务不可用时回退为直接订阅 suspension_state（真值）
+///   - "topic"：直接订阅 suspension_state（真值，旧行为；后期将改为订阅
+///     估计话题 estimated_state）
 /// 发布话题：control_force (std_msgs::msg::Float64)
 ///
 /// 控制器使用标准悬架状态空间（平衡点为 0，x_ref = 0）：
@@ -54,6 +62,9 @@ public:
 
     // 控制频率（与模型更新频率一致，用于离散化）
     declare_parameter("rate", 100.0);
+
+    // 状态来源：service（调用估计服务）/ topic（直接订阅 suspension_state）
+    declare_parameter<std::string>("state_source", "service");
 
     // 物理参数（与 config/model_params.yaml 保持一致）
     declare_parameter("ms", 300.0);
@@ -113,38 +124,93 @@ public:
     // 4) 求解离散 Riccati 方程并计算最优增益 K
     controller_ = std::make_shared<LqrController>(Ad, Bd, Q, R);
 
-    // 5) 订阅状态、发布控制力
-    subscription_ = this->create_subscription<suspension_sim::msg::SuspensionState>(
-      "suspension_state", 10,
-      [this](const suspension_sim::msg::SuspensionState::SharedPtr msg) {
-        // 从绝对坐标构造悬架坐标 z（z_ref = 0）
-        const double z1 = msg->xs - msg->xus;              // 悬架动行程
-        const double z2 = msg->xus - msg->road_height;     // 轮胎变形
-        Eigen::VectorXd z(4);
-        z << z1, z2, msg->xs_dot, msg->xus_dot;
-
-        const double force = controller_->computeForce(z, Eigen::VectorXd::Zero(4));
-
-        auto out = std_msgs::msg::Float64();
-        out.data = force;
-        publisher_->publish(out);
-      });
-
     publisher_ = this->create_publisher<std_msgs::msg::Float64>("control_force", 10);
+
+    // 5) 选择状态来源
+    const std::string state_source = get_parameter("state_source").as_string();
+    if (state_source == "service") {
+      // 作为服务客户端，向 estimator_node 请求估计状态（默认）
+      client_ = this->create_client<suspension_sim::srv::EstimateState>(
+        "estimate_state");
+      while (!client_->wait_for_service(2s)) {
+        RCLCPP_WARN(
+          this->get_logger(),
+          "estimate_state service not available, retrying...");
+      }
+      service_timer_ = this->create_wall_timer(
+        10ms, std::bind(&ControllerNode::on_service_timer, this));
+    } else {
+      // 直接订阅状态（真值 / 旧行为）
+      subscription_ = this->create_subscription<suspension_sim::msg::SuspensionState>(
+        "suspension_state", 10,
+        [this](const suspension_sim::msg::SuspensionState::SharedPtr msg) {
+          on_state(msg->xs, msg->xus, msg->road_height, msg->xs_dot, msg->xus_dot);
+        });
+    }
 
     RCLCPP_INFO(
       this->get_logger(),
-      "controller_node started: subscribing 'suspension_state', publishing "
+      "controller_node started: state_source='%s', publishing "
       "'control_force' (dt=%.4f s). K = [%.4f, %.4f, %.4f, %.4f]",
-      dt,
+      state_source.c_str(), dt,
       controller_->K()(0, 0), controller_->K()(0, 1),
       controller_->K()(0, 2), controller_->K()(0, 3));
   }
 
 private:
+  void on_service_timer()
+  {
+    if (!client_->service_is_ready()) {
+      return;
+    }
+    // 无在途请求时发起新请求；否则若已就绪则取响应并计算控制力
+    if (!pending_future_.valid()) {
+      request_ = std::make_shared<suspension_sim::srv::EstimateState::Request>();
+      pending_future_ = client_->async_send_request(request_).future;
+      return;
+    }
+    if (pending_future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+      auto resp = pending_future_.get();
+      // 从绝对坐标构造悬架坐标 z（z_ref = 0）
+      const double z1 = resp->xs - resp->xus;              // 悬架动行程估计
+      const double z2 = resp->xus - resp->road_height;     // 轮胎变形估计
+      Eigen::VectorXd z(4);
+      z << z1, z2, resp->xs_dot, resp->xus_dot;
+
+      const double force = controller_->computeForce(z, Eigen::VectorXd::Zero(4));
+
+      auto out = std_msgs::msg::Float64();
+      out.data = force;
+      publisher_->publish(out);
+
+      // 本轮请求处理完毕，发起下一次请求
+      pending_future_ = client_->async_send_request(request_).future;
+    }
+  }
+
+  void on_state(
+    double xs, double xus, double road_height, double xs_dot, double xus_dot)
+  {
+    // 从绝对坐标构造悬架坐标 z（z_ref = 0）
+    const double z1 = xs - xus;              // 悬架动行程
+    const double z2 = xus - road_height;     // 轮胎变形
+    Eigen::VectorXd z(4);
+    z << z1, z2, xs_dot, xus_dot;
+
+    const double force = controller_->computeForce(z, Eigen::VectorXd::Zero(4));
+
+    auto out = std_msgs::msg::Float64();
+    out.data = force;
+    publisher_->publish(out);
+  }
+
   rclcpp::Subscription<suspension_sim::msg::SuspensionState>::SharedPtr subscription_;
+  rclcpp::Client<suspension_sim::srv::EstimateState>::SharedPtr client_;
+  rclcpp::TimerBase::SharedPtr service_timer_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr publisher_;
   std::shared_ptr<LqrController> controller_;
+  std::shared_ptr<suspension_sim::srv::EstimateState::Request> request_;
+  std::future<suspension_sim::srv::EstimateState::Response::SharedPtr> pending_future_;
 };
 
 }  // namespace suspension_sim

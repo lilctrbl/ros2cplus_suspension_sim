@@ -61,7 +61,7 @@ rosidl_get_typesupport_target(cpp_typesupport_target
   ${PROJECT_NAME} rosidl_typesupport_cpp)
 target_link_libraries(model_node "${cpp_typesupport_target}")
 
-# LQR 控制器节点：订阅 suspension_state，发布 control_force
+# LQR 控制器节点：订阅状态 / 调用估计服务，发布 control_force
 add_executable(controller_node
   src/controller_node.cpp
   src/lqr_controller.cpp)
@@ -91,7 +91,7 @@ target_include_directories(test_lqr PRIVATE
   include)
 target_link_libraries(test_lqr Eigen3::Eigen)
 
-# 状态估计节点：卡尔曼滤波订阅状态 + 提供服务
+# 状态估计节点：卡尔曼滤波订阅状态 + 发布估计话题 + 提供服务
 add_executable(estimator_node
   src/estimator_node.cpp
   src/kalman_filter.cpp)
@@ -115,6 +115,10 @@ install(TARGETS road_input_node road_display_node model_node controller_node
   estimator_node
   test_model test_lqr test_kalman
   DESTINATION lib/${PROJECT_NAME})
+
+# 安装 launch 启动文件
+install(DIRECTORY launch
+  DESTINATION share/${PROJECT_NAME})
 
 # 安装默认 YAML 配置
 install(FILES config/model_params.yaml

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <memory>
+#include <random>
 #include <string>
 
 #include "rclcpp/rclcpp.hpp"
@@ -20,10 +21,11 @@ using namespace std::chrono_literals;
 namespace suspension_sim
 {
 
-/// @brief 状态估计节点：卡尔曼滤波融合仿真状态（含噪声），并提供估计服务
+/// @brief 状态估计节点：卡尔曼滤波估计悬架状态
 ///
-/// 订阅话题：suspension_state (suspension_sim::msg::SuspensionState，真值+噪声)
+/// 订阅话题：suspension_state (suspension_sim::msg::SuspensionState)
 /// 提供服务：estimate_state (suspension_sim::srv::EstimateState，返回当前估计)
+/// 发布话题：estimated_state (suspension_sim::msg::SuspensionState，估计状态)
 ///
 /// 采用与 LQR 控制器一致的*悬架状态空间*（平衡点 0）：
 ///   z = [z1, z2, z3, z4]
@@ -35,13 +37,15 @@ namespace suspension_sim
 /// 连续系统矩阵与 controller_node 相同；已知输入为路面速度 r_dot
 /// （悬架坐标中 dz2/dt = z4 - r_dot），由相邻两次 road_height 数值差分得到，
 /// 经 B = [0,-1,0,0]^T 进入预测步。观测取 z2（轮胎变形）与 z4（簧下
-/// 速度），均含零均值高斯测量噪声，由观测噪声协方差 R_meas 表达。
-/// 过程噪声协方差 Q_proc 表达模型误差 / 未建模的控制力 / 路面扰动。
+/// 速度），均含零均值高斯测量噪声。
+///
+/// 卡尔曼滤波噪声协方差由 measurement_noise / process_noise 参数表达
+/// （Q_proc 表达过程噪声，R_meas 表达观测噪声）。
 ///
 /// 每次收到状态消息：
 ///   1. 由测量构造观测 y = [z2, z4]（测量含噪声）
 ///   2. ZOH 离散系统矩阵经 KalmanFilter 做一步 predict + update
-///   3. 服务请求时返回当前滤波状态（均值 x_hat）
+///   3. 发布 estimated_state 话题；服务请求时返回当前估计
 class EstimatorNode : public rclcpp::Node
 {
 public:
@@ -52,6 +56,7 @@ public:
     declare_parameter("measurement_noise", 1e-4);   // 观测噪声标准差（位移/速度，m 或 m/s）
     declare_parameter("process_noise", 1e-6);       // 过程噪声标准差
     declare_parameter("rate", 100.0);               // 模型更新频率（与 model_node 一致，用于离散化）
+    declare_parameter("add_noise", true);           // 是否在测量上叠加模拟传感器噪声（便于联调验证）
 
     // 物理参数（与 config/model_params.yaml 保持一致）
     declare_parameter("ms", 300.0);
@@ -67,7 +72,6 @@ public:
     const double kt = get_parameter("kt").as_double();
     const double dt = 1.0 / get_parameter("rate").as_double();
     const double sig_y = get_parameter("measurement_noise").as_double();
-    const double sig_w = get_parameter("process_noise").as_double();
 
     // 1) 连续系统矩阵（悬架坐标 z = [z1,z2,z3,z4]）
     Eigen::MatrixXd A(4, 4);
@@ -105,6 +109,7 @@ public:
     C(1, 3) = 1.0;
 
     // 5) 噪声协方差（对角线为方差 = 标准差^2）
+    const double sig_w = get_parameter("process_noise").as_double();
     Eigen::MatrixXd Q_proc = Eigen::MatrixXd::Identity(4, 4) * (sig_w * sig_w);
     Eigen::MatrixXd R_meas = Eigen::MatrixXd::Identity(2, 2) * (sig_y * sig_y);
 
@@ -117,7 +122,11 @@ public:
         on_state(msg);
       });
 
-    // 7) 估计服务：请求为空，返回当前状态估计
+    // 7) 发布估计状态话题（controller_node 后期将改为直接订阅该话题）
+    publisher_ = this->create_publisher<suspension_sim::msg::SuspensionState>(
+      "estimated_state", 10);
+
+    // 8) 估计服务：请求为空，返回当前状态估计
     service_ = this->create_service<suspension_sim::srv::EstimateState>(
       "estimate_state",
       [this](
@@ -128,9 +137,10 @@ public:
 
     RCLCPP_INFO(
       this->get_logger(),
-      "estimator_node started: subscribing 'suspension_state', serving "
-      "'estimate_state' (dt=%.4f s, sig_y=%.1e, sig_w=%.1e)",
-      dt, sig_y, sig_w);
+      "estimator_node started: subscribing 'suspension_state', "
+      "publishing 'estimated_state', serving 'estimate_state' "
+      "(dt=%.4f s, sig_y=%.1e)",
+      dt, sig_y);
   }
 
 private:
@@ -147,21 +157,51 @@ private:
     }
     last_road_height_ = msg->road_height;
 
-    // 观测 = [z2(轮胎变形), z4(簧下速度)] + 测量噪声；
-    // 已知输入 u = [r_dot]（B 第 0 列）
+    // 观测 = [z2(轮胎变形), z4(簧下速度)]；可选叠加模拟传感器噪声
+    double y2 = z2;
+    double y4 = msg->xus_dot;
+    if (get_parameter("add_noise").as_bool()) {
+      const double sig_y = get_parameter("measurement_noise").as_double();
+      y2 += gauss_(g_rng_) * sig_y;
+      y4 += gauss_(g_rng_) * sig_y;
+    }
     Eigen::Vector2d y;
-    y << z2, msg->xus_dot;
+    y << y2, y4;
 
     // 已知输入 u = [r_dot]（B 第 0 列）
     Eigen::VectorXd u(1);
     u << r_dot;
+
+    // 卡尔曼一步（predict + update）
     filter_->step(y, u);
+    const Eigen::VectorXd x = filter_->xHat();
 
     // 记录最近一次测量对应的路面高度与时间（恢复绝对量 / 响应使用）
     latest_road_height_ = msg->road_height;
     last_time_ = (this->now() - start_time_).seconds();
     has_measurement_ = true;
     has_estimate_ = true;
+
+    // 发布估计状态话题
+    publish_estimate(x);
+  }
+
+  void publish_estimate(const Eigen::VectorXd & x)
+  {
+    const double z1 = x(0);  // 悬架动行程估计
+    const double z2 = x(1);  // 轮胎变形估计
+    const double z3 = x(2);  // 簧上速度估计
+    const double z4 = x(3);  // 簧下速度估计
+
+    auto msg = suspension_sim::msg::SuspensionState();
+    msg.time = has_estimate_ ? last_time_ : 0.0;
+    msg.road_height = latest_road_height_;     // 路面高度真值（来自 model_node）
+    msg.xs = z1 + z2 + latest_road_height_;    // xs = z1 + z2 + r
+    msg.xus = z2 + latest_road_height_;        // xus = z2 + r
+    msg.xs_dot = z3;
+    msg.xus_dot = z4;
+    msg.body_accel = 0.0;                      // 状态不含加速度，暂填 0
+    publisher_->publish(msg);
   }
 
   void on_estimate_service(suspension_sim::srv::EstimateState::Response::SharedPtr resp)
@@ -188,6 +228,7 @@ private:
   }
 
   rclcpp::Subscription<suspension_sim::msg::SuspensionState>::SharedPtr subscription_;
+  rclcpp::Publisher<suspension_sim::msg::SuspensionState>::SharedPtr publisher_;
   rclcpp::Service<suspension_sim::srv::EstimateState>::SharedPtr service_;
   std::shared_ptr<KalmanFilter> filter_;
   const rclcpp::Time start_time_;
@@ -196,6 +237,10 @@ private:
   double last_time_ = 0.0;
   bool has_measurement_ = false;
   bool has_estimate_ = false;
+
+  // 模拟传感器噪声的高斯随机源
+  std::mt19937 g_rng_{42u};
+  std::normal_distribution<double> gauss_{0.0, 1.0};
 };
 
 }  // namespace suspension_sim

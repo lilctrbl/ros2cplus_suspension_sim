@@ -10,6 +10,12 @@ log/
 *.pyc
 core
 
+# ===== Python（launch 文件编译缓存）=====
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+
 # ===== rosbag2 录制文件 =====
 *.bag
 *.db3

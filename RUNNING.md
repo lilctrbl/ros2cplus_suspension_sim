@@ -8,13 +8,15 @@
 suspension_sim/
 ├── config/
 │   └── model_params.yaml      # 悬架模型物理参数（YAML）
+├── launch/
+│   └── simulation.launch.py   # 一键启动四节点（含话题重映射）
 ├── include/suspension_sim/
 │   ├── road_profile.hpp       # 路面模型抽象基类 + 多种实现（策略模式）
 │   ├── suspension_model.hpp   # 悬架模型抽象基类（纯虚接口）
 │   ├── quarter_car_model.hpp  # 二自由度四分之一车模型（继承基类）
 │   ├── params_loader.hpp      # 参数加载 + 模型工厂声明
 │   ├── lqr_controller.hpp     # LQR 控制器（DARE 求解 + 状态反馈）
-│   └── kalman_filter.hpp      # 卡尔曼滤波器（predict/update）
+│   ├── kalman_filter.hpp      # 卡尔曼滤波器（predict/update）
 ├── msg/
 │   └── SuspensionState.msg    # 自定义消息：悬架系统状态
 ├── srv/
@@ -23,8 +25,8 @@ suspension_sim/
     ├── road_input_node.cpp    # 发布节点：100 Hz 发布 road_height
     ├── road_display_node.cpp  # 订阅节点：订阅并打印 road_height
     ├── model_node.cpp         # 模型节点：订阅路面+控制力→发布 suspension_state
-    ├── controller_node.cpp    # LQR 控制器节点：订阅状态→发布 control_force
-    ├── estimator_node.cpp     # 状态估计节点：卡尔曼滤波 + estimate_state 服务
+    ├── controller_node.cpp    # LQR 控制器节点：调用估计服务/订阅状态→发布 control_force
+    ├── estimator_node.cpp     # 状态估计节点：卡尔曼滤波 + estimated_state 话题 + 服务
     ├── params_loader.cpp      # loadParams / createModel 实现
     ├── lqr_controller.cpp     # LqrController 实现
     ├── kalman_filter.cpp      # KalmanFilter 实现
@@ -39,10 +41,11 @@ suspension_sim/
 graph LR
     A[road_input_node<br/>发布者] -->|topic: road_height| C[model_node<br/>订阅+发布]
     C -->|topic: suspension_state| D[controller_node<br/>LQR 控制器]
+    C -->|topic: suspension_state| E[estimator_node<br/>卡尔曼估计+服务]
     D -->|topic: control_force| C
-    C -->|topic: suspension_state| E[estimator_node<br/>卡尔曼滤波+服务]
-    C -->|topic: suspension_state| F[外部观察者<br/>ros2 topic echo]
-    E -->|service: estimate_state| G[外部请求者<br/>ros2 service call]
+    D -->|service: estimate_state| E
+    E -->|topic: estimated_state| F[外部观察者<br/>ros2 topic echo]
+    C -->|topic: suspension_state| G[外部观察者<br/>ros2 topic echo]
 ```
 
 ## 1. 编译
@@ -70,6 +73,52 @@ source ~/suspension_ws/install/setup.bash
 ```
 
 > 这个 `source` 也**每次新终端都要执行**，否则 `ros2 run` 会提示找不到包。
+
+## 2.5 一键启动仿真（launch）
+
+用 launch 文件同时启动 `road_input_node`、`model_node`、`estimator_node`、
+`controller_node` 四个节点，无需手动开多个终端：
+
+```bash
+source ~/suspension_ws/install/setup.bash
+ros2 launch suspension_sim simulation.launch.py
+```
+
+launch 会自动按数据流建好连接：
+
+```mermaid
+graph LR
+    A[road_input_node] -->|road_height| C[model_node]
+    C -->|suspension_state| E[estimator_node]
+    C -->|suspension_state| D[controller_node]
+    D -->|control_force| C
+    D -->|service: estimate_state| E
+    E -->|estimated_state| F[观察者]
+```
+
+### 支持的命令行参数
+
+| 参数名 | 默认值 | 说明 |
+| ------ | ------ | ---- |
+| `topic_prefix` | `''`（空） | 所有话题/服务统一加前缀（重映射），如 `topic_prefix:=sim` 后话题变为 `/sim/road_height` 等 |
+| `road_profile` | `sine` | 路面类型：`sine` / `square` / `random` / `speed_bump` |
+| `amplitude` | `0.05` | 路面振幅 (m) |
+| `frequency` | `0.5` | 路面频率 (Hz) |
+| `rate` | `100.0` | 模型/控制/估计频率 (Hz) |
+| `state_source` | `service` | controller 状态来源：`service`（调用估计服务）/ `topic`（订阅真值） |
+
+示例：
+
+```bash
+# 方波路面 + 所有话题加 sim 前缀
+ros2 launch suspension_sim simulation.launch.py topic_prefix:=sim road_profile:=square
+
+# 只切换控制器状态来源为直接订阅真值
+ros2 launch suspension_sim simulation.launch.py state_source:=topic
+```
+
+启动后可用 `ros2 topic echo` / `ros2 service call` 观察（话题名记得加前缀）。
+停止：在 launch 终端按 `Ctrl+C`（launch 会一并终止所有子节点）。
 
 ## 3. 观察话题通信（核心实验）
 
@@ -162,16 +211,26 @@ t(s)  road(m)  xs(m)     xus(m)    xs_dot    xus_dot   accel(m/s^2)
 
 ### 3.5 LQR 主动悬架闭环（三节点联调）
 
-LQR 控制器订阅模型状态、计算最优控制力并反馈给模型，形成闭环：
+LQR 控制器默认作为**服务客户端**调用 `estimate_state` 服务获取*估计状态*（需先启动 `estimator_node`）；若不想用估计器，可用 `-p state_source:=topic` 回退为直接订阅 `suspension_state` 真值。
 
 **终端 B** 运行模型节点（保持运行）：
 ```bash
 ros2 run suspension_sim model_node
 ```
 
-**终端 C** 运行 LQR 控制器：
+**终端 C** 运行状态估计节点（提供估计状态，保持运行）：
+```bash
+ros2 run suspension_sim estimator_node
+```
+
+**终端 D** 运行 LQR 控制器（默认调用估计服务）：
 ```bash
 ros2 run suspension_sim controller_node
+```
+
+若只想用真值（旧行为）：
+```bash
+ros2 run suspension_sim controller_node --ros-args -p state_source:=topic
 ```
 
 应看到日志（打印最优增益 K）：
@@ -224,9 +283,9 @@ K = [  16549.77   13327.58    2433.71    -386.76]
 衰减到 10%   :      0.250 s       0.220 s
 ```
 
-### 3.7 卡尔曼滤波状态估计（服务调用）
+### 3.7 状态估计（卡尔曼滤波）
 
-状态估计节点 `estimator_node` 订阅含噪声的 `suspension_state`，内部用卡尔曼滤波平滑状态，并提供 `estimate_state` 服务返回估计值。
+状态估计节点 `estimator_node` 订阅 `suspension_state`，内部用卡尔曼滤波估计状态，发布 `estimated_state` 话题，并提供 `estimate_state` 服务返回估计值。
 
 **终端 B** 运行模型节点（保持运行）：
 ```bash
@@ -240,7 +299,7 @@ ros2 run suspension_sim estimator_node
 
 应看到日志：
 ```
-[INFO] [estimator_node]: estimator_node started: subscribing 'suspension_state', serving 'estimate_state' (dt=0.0100 s, sig_y=1.0e-04, sig_w=1.0e-06)
+[INFO] [estimator_node]: estimator_node started: subscribing 'suspension_state', publishing 'estimated_state', serving 'estimate_state' (dt=0.0100 s, sig_y=1.0e-04)
 ```
 
 **终端 D** 调用估计服务（请求为空，`{}`）：
@@ -260,6 +319,8 @@ suspension_sim.srv.EstimateState_Response(time=1.5200000000000002, road_height=0
 ```bash
 ros2 service list
 ros2 interface show suspension_sim/srv/EstimateState
+# 查看估计话题（估计器发布）
+ros2 topic echo estimated_state --once
 ```
 
 ### 3.8 独立卡尔曼测试程序（不依赖 ROS）
@@ -324,6 +385,9 @@ pkill -9 -f model_node
 pkill -9 -f controller_node
 pkill -9 -f estimator_node
 ```
+
+> 注意：`controller_node` 默认调用 `estimate_state` 服务，需先启动 `estimator_node`；
+> 若只想用真值，加 `--ros-args -p state_source:=topic`。
 
 ## 6. 常见问题
 
