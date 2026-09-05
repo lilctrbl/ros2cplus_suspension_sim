@@ -10,6 +10,11 @@ log/
 *.pyc
 core
 
+# ===== 数据记录 / 绘图产物（data_recorder_node / plot_results.py）=====
+logs/
+*.csv
+*.png
+
 # ===== Python（launch 文件编译缓存）=====
 __pycache__/
 *.py[cod]

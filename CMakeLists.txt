@@ -103,6 +103,15 @@ rosidl_get_typesupport_target(estimator_cpp_typesupport_target
   ${PROJECT_NAME} rosidl_typesupport_cpp)
 target_link_libraries(estimator_node "${estimator_cpp_typesupport_target}")
 
+# 数据记录节点：订阅感兴趣话题 → 按固定周期写入 CSV（供 matplotlib 绘图）
+add_executable(data_recorder_node src/data_recorder_node.cpp)
+target_include_directories(data_recorder_node PRIVATE
+  include)
+ament_target_dependencies(data_recorder_node rclcpp std_msgs)
+rosidl_get_typesupport_target(recorder_cpp_typesupport_target
+  ${PROJECT_NAME} rosidl_typesupport_cpp)
+target_link_libraries(data_recorder_node "${recorder_cpp_typesupport_target}")
+
 # 独立测试程序：卡尔曼滤波效果对比（不依赖 rclcpp）
 add_executable(test_kalman
   src/test_kalman.cpp
@@ -112,13 +121,19 @@ target_include_directories(test_kalman PRIVATE
 target_link_libraries(test_kalman Eigen3::Eigen)
 
 install(TARGETS road_input_node road_display_node model_node controller_node
-  estimator_node
+  estimator_node data_recorder_node
   test_model test_lqr test_kalman
   DESTINATION lib/${PROJECT_NAME})
 
 # 安装 launch 启动文件
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME})
+
+# 安装绘图 / 分析 Python 脚本
+# 装到 lib/${PROJECT_NAME} 使其可用 `ros2 run suspension_sim plot_results.py`
+# 直接执行（脚本带 shebang + 可执行权限）
+install(PROGRAMS scripts/plot_results.py
+  DESTINATION lib/${PROJECT_NAME})
 
 # 安装默认 YAML 配置
 install(FILES config/model_params.yaml

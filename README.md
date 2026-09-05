@@ -19,6 +19,9 @@
 | `yaml-cpp-vendor`| YAML 解析（参数文件读取）|
 | `rosidl_default_generators` | 自定义消息代码生成 |
 
+> 绘图脚本 `scripts/plot_results.py` 另需 Python 的 `numpy` 与 `matplotlib`
+> （`pip install numpy matplotlib`）。
+
 ## 构建
 
 ```bash
@@ -146,6 +149,8 @@ suspension_sim/
 │       └── kalman_filter.hpp    # 卡尔曼滤波器（predict/update）
 ├── msg/
 │   └── SuspensionState.msg      # 自定义消息：悬架系统状态
+├── scripts/
+│   └── plot_results.py          # Python 绘图脚本（matplotlib 读 CSV 画曲线）
 ├── srv/
 │   └── EstimateState.srv        # 自定义服务：状态估计请求/响应
 ├── src/
@@ -154,6 +159,7 @@ suspension_sim/
 │   ├── model_node.cpp           # 模型节点（订阅路面+控制力→更新模型→发布状态）
 │   ├── controller_node.cpp      # LQR 控制器节点（调用估计服务/订阅状态→发布控制力）
 │   ├── estimator_node.cpp       # 状态估计节点（卡尔曼滤波 + 估计话题 + estimate_state 服务）
+│   ├── data_recorder_node.cpp   # 数据记录节点（订阅话题 → 写 CSV）
 │   ├── params_loader.cpp        # loadParams / createModel 实现
 │   ├── lqr_controller.cpp       # LqrController 实现（DARE + K 计算）
 │   ├── kalman_filter.cpp        # KalmanFilter 实现（predict/update）
@@ -420,6 +426,56 @@ ros2 interface show suspension_sim/srv/EstimateState
 ros2 run suspension_sim test_kalman
 ```
 
+## 数据记录与绘图
+
+`data_recorder_node` 订阅所有感兴趣话题，按固定周期（默认 100 Hz）把它们的
+最近值写入一个 CSV 文件（一行一时刻）。CSV 表头：
+
+```
+t, road_height, xs, xus, xs_dot, xus_dot, body_accel, control_force, xs_est, xus_est
+```
+
+| 列 | 含义 | 单位 |
+| ---- | ---- | ---- |
+| `t` | 采样时刻（相对记录节点启动） | s |
+| `road_height` | 路面高度 | m |
+| `xs` / `xus` | 簧上（车身）/ 簧下（车轮）位移 | m |
+| `xs_dot` / `xus_dot` | 簧上 / 簧下速度 | m/s |
+| `body_accel` | 车身加速度 | m/s² |
+| `control_force` | LQR 主动控制力 | N |
+| `xs_est` / `xus_est` | 卡尔曼估计位移（`estimated_state`） | m |
+
+> 控制力闭环：`controller_node` 发布 `control_force`，`model_node` 订阅并把它
+> 作为外力 `u` 传入 `model_->update(road, dt, u)`（见 `quarter_car_model.hpp`
+> 动力学方程）。未运行控制器时该列为 `nan`，悬架退化为被动。
+
+### 记录节点运行
+
+```bash
+# 终端 A/B/C/D：启动路面 / 模型 / 估计 / 控制（或用 launch 一键启动）
+# 终端 E：数据记录（在 ~/suspension_ws 下执行，默认写 logs/suspension_log.csv）
+ros2 run suspension_sim data_recorder_node
+# 改输出路径：
+ros2 run suspension_sim data_recorder_node --ros-args -p out_file:=/tmp/my.csv
+# 停止：Ctrl+C（每行已 flush，数据不丢）
+```
+
+### 绘图（Python + matplotlib）
+
+```bash
+# 读默认 logs/suspension_log.csv 并弹窗显示
+ros2 run suspension_sim plot_results.py
+
+# 或直接执行脚本：指定文件 / 存 PNG / 只画前 5 秒
+python3 src/suspension_sim/scripts/plot_results.py logs/suspension_log.csv
+python3 src/suspension_sim/scripts/plot_results.py --out logs/figure.png
+python3 src/suspension_sim/scripts/plot_results.py --xlim 0 5
+```
+
+绘图脚本自动分面板显示：车身/车轮位移、速度、车身加速度、控制力、路面高度、
+估计 vs 真值（含估计列时出现）。缺失话题（`nan`）自动跳过；缺少中文字体自动
+回退英文标签。
+
 ## 节点
 
 | 节点 | 文件 | 作用 |
@@ -429,13 +485,15 @@ ros2 run suspension_sim test_kalman
 | `model_node` | `src/model_node.cpp` | 订阅 `road_height` + `control_force`，更新悬架模型，发布 `suspension_state` |
 | `controller_node` | `src/controller_node.cpp` | LQR 控制器：调用 `estimate_state` 服务（或订阅状态），发布 `control_force` |
 | `estimator_node` | `src/estimator_node.cpp` | 卡尔曼估计器：订阅 `suspension_state`，发布 `estimated_state`，提供 `estimate_state` 服务 |
+| `data_recorder_node` | `src/data_recorder_node.cpp` | 数据记录：订阅各话题 → 定时写入 CSV |
+| `plot_results` | `scripts/plot_results.py` | Python 绘图：读 CSV → matplotlib 画曲线 |
 | `test_model` | `src/test_model.cpp` | 独立测试：YAML 加载 → 模型 → 仿真打印 |
 | `test_lqr` | `src/test_lqr.cpp` | 独立测试：LQR 求解 → 初始条件响应对比 |
 | `test_kalman` | `src/test_kalman.cpp` | 独立测试：卡尔曼滤波 → 含噪观测 vs 估计对比 |
 
 ## 版本
 
-当前版本：**v2.3**，详见 [version.md](version.md)。
+当前版本：**v2.4**，详见 [version.md](version.md)。
 
 ## 许可
 

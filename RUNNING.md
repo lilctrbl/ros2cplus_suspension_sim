@@ -19,6 +19,8 @@ suspension_sim/
 │   ├── kalman_filter.hpp      # 卡尔曼滤波器（predict/update）
 ├── msg/
 │   └── SuspensionState.msg    # 自定义消息：悬架系统状态
+├── scripts/
+│   └── plot_results.py       # Python 绘图脚本（matplotlib 读 CSV）
 ├── srv/
 │   └── EstimateState.srv      # 自定义服务：状态估计请求/响应
 └── src/
@@ -27,6 +29,7 @@ suspension_sim/
     ├── model_node.cpp         # 模型节点：订阅路面+控制力→发布 suspension_state
     ├── controller_node.cpp    # LQR 控制器节点：调用估计服务/订阅状态→发布 control_force
     ├── estimator_node.cpp     # 状态估计节点：卡尔曼滤波 + estimated_state 话题 + 服务
+    ├── data_recorder_node.cpp   # 数据记录节点：订阅话题→写 CSV
     ├── params_loader.cpp      # loadParams / createModel 实现
     ├── lqr_controller.cpp     # LqrController 实现
     ├── kalman_filter.cpp      # KalmanFilter 实现
@@ -46,6 +49,11 @@ graph LR
     D -->|service: estimate_state| E
     E -->|topic: estimated_state| F[外部观察者<br/>ros2 topic echo]
     C -->|topic: suspension_state| G[外部观察者<br/>ros2 topic echo]
+    C -->|topic: suspension_state| H[data_recorder_node<br/>写 CSV]
+    D -->|topic: control_force| H
+    E -->|topic: estimated_state| H
+    A -->|topic: road_height| H
+    H -->|suspension_log.csv| I[plot_results.py<br/>matplotlib 画图]
 ```
 
 ## 1. 编译
@@ -95,6 +103,10 @@ graph LR
     D -->|service: estimate_state| E
     E -->|estimated_state| F[观察者]
 ```
+
+> `data_recorder_node` 不在 launch 中（默认不记录）；需要录制数据
+> 时另开终端运行 `ros2 run suspension_sim data_recorder_node`，
+> 详见 [3.10](#310-数据记录与绘图recorder--matplotlib)。
 
 ### 支持的命令行参数
 
@@ -364,6 +376,70 @@ ros2 topic info road_height
 ros2 interface show suspension_sim/msg/SuspensionState
 ```
 
+### 3.10 数据记录与绘图（recorder + matplotlib）
+
+`data_recorder_node` 订阅所有感兴趣话题，按固定周期（默认 100 Hz）把它们
+写入一个 CSV 文件（一行一时刻，各列对应该时刻各话题的最近值）。随后可用
+`scripts/plot_results.py`（Python + matplotlib）把 CSV 画成曲线。
+
+> 绘图需 Python 的 `numpy` 与 `matplotlib`（`pip install numpy matplotlib`）。
+
+**终端 E** 运行数据记录节点（保持运行，在 `~/suspension_ws` 下执行）：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/suspension_ws/install/setup.bash
+cd ~/suspension_ws
+
+ros2 run suspension_sim data_recorder_node
+```
+
+应看到日志（默认写到 `logs/suspension_log.csv`）：
+```
+[INFO] [data_recorder_node]: data_recorder_node started: subscribing
+suspension_state / control_force / estimated_state / road_height,
+writing CSV to 'logs/suspension_log.csv' at 100.0 Hz
+```
+
+录制约 10 秒后在终端 E 按 `Ctrl+C` 停止。CSV 表头与含义：
+
+| 列 | 含义 | 单位 |
+| ---- | ---- | ---- |
+| `t` | 采样时刻（相对记录节点启动） | s |
+| `road_height` | 路面高度 | m |
+| `xs` / `xus` | 簧上（车身）/ 簧下（车轮）位移 | m |
+| `xs_dot` / `xus_dot` | 簧上 / 簧下速度 | m/s |
+| `body_accel` | 车身加速度 | m/s² |
+| `control_force` | 主动控制力（LQR 输出） | N |
+| `xs_est` / `xus_est` | 卡尔曼估计位移（estimated_state） | m |
+
+某话题尚未收到时对应列为 `nan`（如刚启动、估计器收敛前），绘图时会自动
+跳过这些点。可用 `-p out_file:=` 改输出路径，如
+`--ros-args -p out_file:=/tmp/my.csv`。
+
+**绘制曲线**（Python + matplotlib，新开终端）：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/suspension_ws/install/setup.bash
+cd ~/suspension_ws
+
+# 方式一：运行已安装脚本（默认读 logs/suspension_log.csv 并弹窗）
+ros2 run suspension_sim plot_results.py
+
+# 方式二：直接执行脚本，指定文件 / 保存 PNG / 只画前 5 秒
+python3 src/suspension_sim/scripts/plot_results.py logs/suspension_log.csv
+python3 src/suspension_sim/scripts/plot_results.py --out logs/figure.png
+python3 src/suspension_sim/scripts/plot_results.py --xlim 0 5
+```
+
+脚本自动分 6 个子图：车身/车轮位移、速度、车身加速度、控制力、路面高度、
+估计 vs 真值（CSV 含 `xs_est` 时出现）。缺少中文字体会自动回退英文标签。
+
+> 提示：`ros2 run` 会直接执行带 shebang 的 Python 脚本（等价于
+> `python3 scripts/plot_results.py`）。保存 PNG 时不弹窗（用 Agg 后端），
+> 适合无显示环境。
+
 ## 4. 切换路面（体验参数）
 
 在终端 C 执行，观察终端 B 的打印值变化：
@@ -384,6 +460,7 @@ pkill -9 -f road_display_node
 pkill -9 -f model_node
 pkill -9 -f controller_node
 pkill -9 -f estimator_node
+pkill -9 -f data_recorder_node
 ```
 
 > 注意：`controller_node` 默认调用 `estimate_state` 服务，需先启动 `estimator_node`；
@@ -403,6 +480,10 @@ pkill -9 -f estimator_node
 | `Eigen/Dense: No such file`（编译错误） | 未链接 Eigen 头文件 | CMake 中 `target_link_libraries(model_node Eigen3::Eigen)` |
 | `ament_target_dependencies() ... 'suspension_sim' was not found` | 消息目标是 `rosidl` 生成目标，不是 `find_package` 的包 | 改用 `rosidl_get_typesupport_target()` 获取目标再 `target_link_libraries` |
 | `param set` 连到旧节点 | 有残留进程占用节点名 | `pkill -9 -f road_input_node` 后重试 |
+| CSV 首行位移为 `nan` | 记录节点刚启动、`suspension_state` 首拍尚
+未到达（启动竞态） | 属正常；稍后即恢复，绘图脚本自动跳过 `nan` |
+| CSV 中 `control_force` 全为 `nan` | 未运行 `controller_node`（悬架
+被动） | 先启动控制器再录制，或 `ros2 topic hz control_force` 确认 |
 
 ## 7. 小练习（检验理解）
 

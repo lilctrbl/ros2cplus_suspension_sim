@@ -1,6 +1,60 @@
 # 版本历史
 
-## v2.3（当前版本）
+## v2.4（当前版本）
+
+发布日期：2026-09-05
+
+### 新增功能
+
+- **数据记录节点 `data_recorder_node`**
+  - 新增 `src/data_recorder_node.cpp`：订阅感兴趣话题（`suspension_state`、
+    `control_force`、`estimated_state`、`road_height`），按固定周期（参数 `rate`
+    ，默认 100 Hz）同步采样并写入 CSV 文件
+  - CSV 表头：`t, road_height, xs, xus, xs_dot, xus_dot, body_accel,
+    control_force, xs_est, xus_est`；某话题尚未收到时对应列写 `nan`
+  - 每行 `flush` 落盘，Ctrl+C 不丢数据；析构时关闭文件
+  - 参数：`out_file`（默认 `logs/suspension_log.csv`）、`rate`（默认 100.0）
+- **Python 绘图脚本 `scripts/plot_results.py`**
+  - 用 numpy + matplotlib 读取 recorder 生成的 CSV 并绘制多面板曲线：
+    车身/车轮位移、速度、车身加速度、控制力、路面高度、估计 vs 真值
+  - 支持 `--out`（保存 PNG，Agg 后端不弹窗）、`--xlim T0 T1`（时间裁剪）、
+    `--no-show`；缺少中文字体自动回退英文标签
+  - 经 CMake 装到 `lib/suspension_sim/`，可用 `ros2 run suspension_sim
+    plot_results.py` 执行
+
+### 任务 1（控制器→模型闭环）说明
+
+- 控制器输出控制力、模型订阅控制力并应用到动力学、`update()` 增加外力参数
+  的闭环在 v2.1-v2.3 已实现（`controller_node` 发布 `control_force` →
+  `model_node` 订阅 → `QuarterCarModel2DOF::update(road, dt, u)`），本次录制
+  数据验证：`control_force` 动态变化（约 ±437 N），证实闭环生效
+
+### 配置变更
+
+- `CMakeLists.txt`：新增 `data_recorder_node` 目标；`install(PROGRAMS)` 将
+  绘图脚本装到 `lib/suspension_sim/` 以支持 `ros2 run`
+- `package.xml`：版本号升至 `2.4.0`
+- `.gitignore`：忽略 `logs/`、`*.csv`、`*.png`
+
+### 文档更新
+
+- `README.md`：新增「数据记录与绘图」章节；节点表、项目结构、版本号更新
+- `RUNNING.md`：目录结构、数据流图加入 recorder 与绘图；新增「3.10 数据记录与
+  绘图」操作章节（运行 recorder、CSV 列说明、matplotlib 绘图命令）
+- `version.md`：新增本版本记录
+
+### 本次新掌握知识点
+
+- CSV 逐行 flush：用 `ofs_.flush()` 每行落盘，避免 `Ctrl+C` 丢数据；析构函数
+  兜底关闭文件流
+- 绘图脚本兼容多后端：`--out` 时 `matplotlib.use('Agg')`（无显示环境出图）
+- ament Python lint：字符串必须用单引号（flake8-quotes Q000）；docstring 需
+  D213（摘要从第二行起）+ D400/D415（首句英文句号）；`from x import y` 与
+  `import x` 需按 isort 顺序且同组
+
+---
+
+## v2.3
 
 发布日期：2026-08-31
 
